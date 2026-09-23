@@ -2,7 +2,17 @@
   "name": "grok",
   "version": "0.1.0",
   "description": "Unofficial: deep adversarial code review by Grok via the grok CLI and your SuperGrok subscription. Strictly read-only.",
-  "author": { "name": "cristian-robertiosef" },
+  "author": {
+    "name": "cristian-robert"
+  },
   "license": "MIT",
-  "keywords": ["grok", "xai", "code-review", "adversarial-review", "read-only"]
+  "keywords": [
+    "grok",
+    "xai",
+    "code-review",
+    "adversarial-review",
+    "read-only"
+  ],
+  "homepage": "https://github.com/cristian-robert/grokPlugin",
+  "repository": "https://github.com/cristian-robert/grokPlugin"
 }

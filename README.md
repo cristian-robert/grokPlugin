@@ -25,7 +25,7 @@ Grok is **strictly read-only**: it can read, list, and search your files, and no
 ## Install
 
 ```
-/plugin marketplace add OWNER/grokPlugin
+/plugin marketplace add cristian-robert/grokPlugin
 /plugin install grok@grok-review
 ```
 
