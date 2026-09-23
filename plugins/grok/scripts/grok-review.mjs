@@ -20,6 +20,7 @@ import {
   parseInvestigation,
   parseReviewOutput,
   resolveGrokHome,
+  sandboxStartupFailure,
   runProcess,
   sandboxWritableDirs
 } from "./lib/grok.mjs";
@@ -151,11 +152,12 @@ export async function runReview(argv, options) {
       REVIEW_INPUT: wrapped.text
     });
     const schemaJson = JSON.stringify(JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, "schemas", "review-output.schema.json"), "utf8")));
-    const sandbox = describeSandbox(options.platform, os.release(), root, sandboxWritableDirs(grokHome));
+    let sandbox = describeSandbox(options.platform, os.release(), root, sandboxWritableDirs(grokHome));
     const promptFile = path.join(tempDir, "prompt.md");
     fs.writeFileSync(promptFile, prompt);
 
-    const extraDenyRules = buildSecretDenyRules({ repoRoot: root, realHome: options.realHome, grokHome, platform: options.platform });
+    const secretRules = buildSecretDenyRules({ repoRoot: root, realHome: options.realHome, grokHome, platform: options.platform });
+    const extraDenyRules = secretRules.rules;
     const snapshot = () => new Map([...computeFingerprint(root), ...computeGrokHomeFingerprint(grokHome)]);
     const totalMs = options.timeoutMs ?? args.timeoutMinutes * 60_000;
     const deadline = Date.now() + totalMs;
@@ -165,11 +167,23 @@ export async function runReview(argv, options) {
     const before = snapshot();
     // Step 1: investigate with tools and write a free-form review. Step 2: resume the same session
     // to convert it to the schema. --json-schema on step 1 makes Grok skip its tools entirely.
-    const investigationRun = await runProcess(
+    let investigationRun = await runProcess(
       grok.command,
       [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile })],
       { env, cwd: root, timeoutMs: totalMs - formatReserveMs }
     );
+    // Grok's sandbox can refuse to start on some machines. As with Windows (no sandbox at all),
+    // the review then runs on the remaining layers and the header says the sandbox was not in effect.
+    const sandboxFailure = sandbox.requested ? sandboxStartupFailure(investigationRun) : null;
+    if (sandboxFailure) {
+      sandbox = { requested: false, enforced: "no", detail: `NOT enforced: Grok couldn't start its sandbox on this machine (${sandboxFailure})` };
+      common.sandbox = false;
+      investigationRun = await runProcess(
+        grok.command,
+        [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile })],
+        { env, cwd: root, timeoutMs: Math.max(deadline - Date.now() - formatReserveMs, 60_000) }
+      );
+    }
     /** @type {unknown} */
     let failure = null;
     /** @type {import("./lib/grok.mjs").RunResult | null} */
@@ -213,7 +227,8 @@ export async function runReview(argv, options) {
         integrity: (changed.length > 0 ? `${changed.length} change(s), listed at the end of this report` : "none") +
           (before.has(IGNORED_TRUNCATED_KEY) ? " (too many ignored files to compare them all; only the first 200000 were checked)" : ""),
         changedDuringReview: changed,
-        isolation: describeIsolation(isolation),
+        isolation: describeIsolation(isolation) +
+          (secretRules.skipped.length > 0 ? `. Note: these paths contain characters Grok's permission rules can't express, so Grok's reads there aren't blocked: ${secretRules.skipped.join(", ")}` : ""),
         truncated: context.truncated,
         sessionId
       })

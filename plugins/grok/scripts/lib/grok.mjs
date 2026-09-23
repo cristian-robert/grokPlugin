@@ -7,6 +7,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { findExecutable } from "./exec.mjs";
 
 export const DEFAULT_EFFORT = "high";
+// grok's first launch can be slow (bundled files are unpacked; on Windows, antivirus scans them).
+const GROK_UTILITY_TIMEOUT_MS = 3 * 60_000;
 export const DEFAULT_TIMEOUT_MS = 9 * 60 * 1000;
 
 const READ_TOOLS = ["read_file", "grep", "list_dir"];
@@ -109,7 +111,7 @@ const SECRET_HOME_ENTRIES = [
  * of those locations (and of the repo) is therefore denied as an exact path too. The repo and
  * anything inside it stay readable.
  * @param {{ repoRoot: string, realHome: string, grokHome: string, platform: NodeJS.Platform }} options
- * @returns {string[]}
+ * @returns {{ rules: string[], skipped: string[] }} skipped: paths that couldn't be written as a safe rule
  */
 export function buildSecretDenyRules(options) {
   const pathApi = options.platform === "win32" ? path.win32 : path.posix;
@@ -142,11 +144,26 @@ export function buildSecretDenyRules(options) {
 
   /** @type {string[]} */
   const rules = [];
-  /** @param {string} pattern */
-  const add = (pattern) => {
+  /** @type {string[]} */
+  const skipped = [];
+  /** @param {string} target */
+  const add = (target) => {
+    // Grok's rule parser treats "\" as an escape (Read(C:\) is "missing closing parenthesis"),
+    // and glob patterns use "/" as the separator, so Windows paths are written with "/".
+    const pattern = options.platform === "win32" ? target.replace(/\\/g, "/") : target;
+    const literal = pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern;
+    // One malformed rule makes grok refuse the whole run, so paths that would need glob or
+    // rule-syntax escaping are skipped (and reported) instead of guessed at. Commas matter too:
+    // grok splits --deny values on "," (verified: Read(/a,b/x) is "missing closing parenthesis").
+    if (/[()[\]{}*?\\,]/.test(literal)) {
+      skipped.push(literal);
+      return;
+    }
     rules.push(`Read(${pattern})`);
-    if (options.platform === "win32") {
-      rules.push(`Read(${pattern.replace(/\\/g, "/")})`);
+    const drive = pattern.match(/^([A-Za-z]):/);
+    if (drive) {
+      const other = drive[1] === drive[1].toUpperCase() ? drive[1].toLowerCase() : drive[1].toUpperCase();
+      rules.push(`Read(${other}${pattern.slice(1)})`);
     }
   };
   for (const target of subtrees) {
@@ -156,7 +173,7 @@ export function buildSecretDenyRules(options) {
   for (const target of [...exact].sort()) {
     add(target);
   }
-  return [...new Set(rules)];
+  return { rules: [...new Set(rules)], skipped: [...new Set(skipped)] };
 }
 
 /**
@@ -221,7 +238,7 @@ export function auditIsolation(inspect) {
  * @param {string} cwd
  */
 export function inspectIsolation(grok, env, cwd) {
-  const result = spawnSync(grok.command, [...grok.prefixArgs, "inspect", "--json"], { cwd, env, encoding: "utf8", shell: false, windowsHide: true, timeout: 60_000 });
+  const result = spawnSync(grok.command, [...grok.prefixArgs, "inspect", "--json"], { cwd, env, encoding: "utf8", shell: false, windowsHide: true, timeout: GROK_UTILITY_TIMEOUT_MS });
   if (result.error || result.status !== 0) {
     throw new Error(`grok inspect failed, so isolation cannot be verified: ${result.error?.message ?? (result.stderr || result.stdout).trim()}`);
   }
@@ -343,9 +360,10 @@ export function parseModelsOutput(text) {
  * @returns {ModelList}
  */
 export function listModels(grok, env) {
-  const result = spawnSync(grok.command, [...grok.prefixArgs, "models"], { env, encoding: "utf8", shell: false, windowsHide: true, timeout: 60_000 });
+  const result = spawnSync(grok.command, [...grok.prefixArgs, "models"], { env, encoding: "utf8", shell: false, windowsHide: true, timeout: GROK_UTILITY_TIMEOUT_MS });
   if (result.error) {
-    throw new Error(`Could not run grok: ${result.error.message}`);
+    const code = /** @type {NodeJS.ErrnoException} */ (result.error).code;
+    throw new Error(code === "ETIMEDOUT" ? "grok models did not respond within 3 minutes. Run `grok models` once in a terminal (the first launch can be slow), then retry." : `Could not run grok: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(`grok models failed: ${(result.stderr || result.stdout).trim()}`);
@@ -423,6 +441,24 @@ export function runProcess(command, args, options) {
     child.on("error", (error) => settle(() => reject(error)));
     child.on("close", done);
   });
+}
+
+/**
+ * Detects grok refusing to start because its kernel sandbox can't be set up (e.g. on Linux,
+ * grok 1.0.41 refuses when it can't read /run/podman/podman.sock to build its deny list).
+ * @param {RunResult} run
+ * @returns {string | null} grok's reason, or null when the run did not fail that way
+ */
+export function sandboxStartupFailure(run) {
+  if (run.status === 0 || run.timedOut) {
+    return null;
+  }
+  const text = `${run.stderr}\n${run.stdout}`;
+  if (!/sandbox/i.test(text) || !/refusing to start|could not enforce|could not be applied|sandbox profile resolve failed|sandbox initialization failed/i.test(text)) {
+    return null;
+  }
+  const firstLine = text.split(/\r?\n/).map((line) => line.replace(/^error:\s*/i, "").trim()).find(Boolean) ?? "unknown reason";
+  return firstLine.slice(0, 240);
 }
 
 /**

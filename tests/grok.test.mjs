@@ -110,25 +110,38 @@ test("runProcess kills a child that ignores SIGTERM and still settles", async ()
 });
 
 test("buildSecretDenyRules denies credential subtrees and every ancestor, never the repo", () => {
-  const rules = buildSecretDenyRules({ repoRoot: "/Users/me/Dev/app", realHome: "/Users/me", grokHome: "/Users/me/.grok", platform: "darwin" });
+  const { rules, skipped } = buildSecretDenyRules({ repoRoot: "/Users/me/Dev/app", realHome: "/Users/me", grokHome: "/Users/me/.grok", platform: "darwin" });
   for (const expected of ["Read(/Users/me/.ssh/**)", "Read(/Users/me/.ssh)", "Read(/Users/me/.grok/**)", "Read(/Users/me)", "Read(/Users/me/Dev)", "Read(/Users)", "Read(/)"]) {
     assert.ok(rules.includes(expected), expected);
   }
   assert.ok(!rules.some((rule) => rule === "Read(/Users/me/Dev/app)" || rule.startsWith("Read(/Users/me/Dev/app/")));
+  assert.deepEqual(skipped, []);
 });
 
 test("buildSecretDenyRules skips subtrees that contain the repo", () => {
-  const rules = buildSecretDenyRules({ repoRoot: "/Users/me/.config/nvim", realHome: "/Users/me", grokHome: "/Users/me/.grok", platform: "darwin" });
+  const { rules } = buildSecretDenyRules({ repoRoot: "/Users/me/.config/nvim", realHome: "/Users/me", grokHome: "/Users/me/.grok", platform: "darwin" });
   assert.ok(!rules.includes("Read(/Users/me/.config/**)"));
   assert.ok(!rules.includes("Read(/Users/me/.config/nvim)"));
   assert.ok(rules.includes("Read(/Users/me/.config)"), "the parent is still denied as an exact grep root");
 });
 
-test("buildSecretDenyRules on Windows emits native and forward-slash forms", () => {
-  const rules = buildSecretDenyRules({ repoRoot: "C:\\src\\app", realHome: "C:\\Users\\me", grokHome: "C:\\Users\\me\\.grok", platform: "win32" });
-  assert.ok(rules.includes("Read(C:\\Users\\me\\.ssh\\**)"));
-  assert.ok(rules.includes("Read(C:/Users/me/.ssh/**)"));
-  assert.ok(rules.includes("Read(C:\\)"));
+test("buildSecretDenyRules on Windows uses forward slashes only, both drive-letter cases", () => {
+  const { rules } = buildSecretDenyRules({ repoRoot: "C:\\src\\app", realHome: "C:\\Users\\me", grokHome: "C:\\Users\\me\\.grok", platform: "win32" });
+  assert.ok(rules.every((rule) => !rule.includes("\\")), "no backslashes: grok's rule parser treats them as escapes");
+  for (const expected of ["Read(C:/Users/me/.ssh/**)", "Read(c:/Users/me/.ssh/**)", "Read(C:/)", "Read(c:/)", "Read(C:/Users/me)", "Read(C:/src)"]) {
+    assert.ok(rules.includes(expected), expected);
+  }
+  assert.ok(rules.every((rule) => /^Read\([^()]*\)$/.test(rule)), "every rule is a single balanced Read(...)");
+});
+
+test("buildSecretDenyRules skips paths that would need escaping instead of emitting malformed rules", () => {
+  const { rules, skipped } = buildSecretDenyRules({ repoRoot: "C:\\Program Files (x86)\\app", realHome: "C:\\Users\\me", grokHome: "C:\\Users\\me\\.grok", platform: "win32" });
+  assert.ok(skipped.includes("C:/Program Files (x86)"));
+  const comma = buildSecretDenyRules({ repoRoot: "/Users/Smith, John/app", realHome: "/Users/Smith, John", grokHome: "/Users/Smith, John/.grok", platform: "darwin" });
+  assert.ok(comma.skipped.includes("/Users/Smith, John"), "grok splits --deny on commas");
+  assert.ok(comma.rules.every((rule) => !rule.includes(",")));
+  assert.ok(rules.every((rule) => /^Read\([^()]*\)$/.test(rule)));
+  assert.ok(rules.includes("Read(C:/)"));
 });
 
 test("auditIsolation reports repo skills and permission sources", () => {

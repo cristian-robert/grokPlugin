@@ -162,3 +162,25 @@ test("a clean repo fails fast without starting grok", async (t) => {
   const missing = { command: path.join(repo, "no-such-grok"), prefixArgs: [] };
   await assert.rejects(runReview(["--scope", "working-tree"], { ...options(repo, "ok"), grok: missing }), /Nothing to review/);
 });
+
+test("when grok refuses to start its sandbox, the review reruns without it and says so", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("no sandbox is requested on Windows");
+    return;
+  }
+  const repo = makeRepo({ "a.py": "x = 1\n" });
+  write(repo, "a.py", "x = 2\n");
+  const argvOut = path.join(os.tmpdir(), `fake-grok-argv-sandbox-${process.pid}.json`);
+  t.after(() => {
+    cleanup(repo);
+    fs.rmSync(argvOut, { force: true });
+    fs.rmSync(`${argvOut}.format`, { force: true });
+  });
+  const outcome = await runReview([], options(repo, "sandbox-fail", argvOut));
+  assert.equal(outcome.exitCode, EXIT_OK);
+  assert.match(outcome.output, /Kernel sandbox:\*\* NOT enforced: Grok couldn't start its sandbox on this machine \(sandbox profile resolve failed/);
+  const investigation = JSON.parse(fs.readFileSync(argvOut, "utf8"));
+  const format = JSON.parse(fs.readFileSync(`${argvOut}.format`, "utf8"));
+  assert.ok(!investigation.args.includes("--sandbox") && !format.args.includes("--sandbox"), "both steps run without the failed sandbox");
+  assert.ok(format.args.includes("--tools"), "every other guardrail flag stays");
+});
