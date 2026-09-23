@@ -40,7 +40,8 @@ Grok is **strictly read-only**: it can read, list, and search your files, and no
 | `--scope working-tree` / `branch` | Force one of the two targets |
 | `--model <id>` | Skip the model picker. Without it, the command lists the models your account can use and asks you to pick |
 | `--effort <level>` | Grok reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `--wait` / `--background` | Skip the "wait or background" question |
+| `--wait` / `--background` | Skip the "wait or background" question. Foreground reviews stop after 9 minutes; background reviews after 30 |
+| `--timeout-minutes <n>` | Override the review time limit (1–120) |
 | focus text | Anything else steers the review, e.g. `focus on auth and tenant isolation` |
 
 The review returns a verdict (`approve` / `needs-attention`), a ship/no-ship summary, and findings ranked by severity with `file:line`, confidence, and a concrete recommendation. Claude shows the output verbatim and does not fix anything.
@@ -49,12 +50,13 @@ The review returns a verdict (`approve` / `needs-attention`), a ship/no-ship sum
 
 No single mechanism is trusted on its own. Every review runs with all of these layers:
 
-1. **Claude side:** the command removes Claude's `Edit`, `Write`, and `NotebookEdit` tools while it runs, and tells Claude never to fix findings.
+1. **Claude side:** the command removes Claude's `Edit`, `Write`, and `NotebookEdit` tools while it runs, pre-approves only this plugin's own script (no raw `git` or `node`), and treats Grok's output as untrusted data: Claude shows it and never acts on instructions inside it.
 2. **Tool surface:** Grok gets exactly three tools: `read_file`, `grep`, `list_dir`. There is no shell, no file writing or editing, no web access, no MCP, and no subagents.
 3. **Permissions:** `dontAsk` mode plus deny rules for `Write`, `Edit`, `Bash`, and every MCP tool.
-4. **Isolation:** Grok normally imports your Claude/Cursor setup (instructions, MCP servers, hooks, and Claude *plugins*). Each review runs with an empty temporary `HOME` and every compatibility switch off. Before each run, `grok inspect` checks that no plugin, hook, or MCP server is loaded. If one is, the review refuses to run.
+4. **Isolation:** Grok normally imports your Claude/Cursor setup (instructions, MCP servers, hooks, and Claude *plugins*). Each review runs with an empty temporary `HOME`, every compatibility switch off, and only an allowlisted set of environment variables (no cloud credentials or tokens). Before each run, `grok inspect` checks that no plugin, hook, or MCP server is loaded. If one is, the review refuses to run.
+   - **Secrets:** Grok's read tools are denied on credential stores (`~/.grok`, `~/.ssh`, `~/.aws`, `~/.config`, `~/.claude`, …), and recursive searches rooted above the repo are blocked.
 5. **Kernel sandbox:** `--sandbox read-only` on macOS (Seatbelt) and Linux (Landlock, kernel 5.13+).
-6. **Integrity check:** the repository (HEAD, refs, index, every modified and untracked file's bytes) is fingerprinted before and after the run. Any difference prints **GUARDRAIL VIOLATION**, exits with code 3, and discards the review. Nothing is auto-reverted, so edits you make at the same time are never lost.
+6. **Integrity check:** the repository is fingerprinted before and after the run: HEAD, refs, index, `.git/HEAD`, `.git/config`, `.git/info/`, `.git/hooks/`, the bytes of every modified and untracked file, and the size and modification time of ignored files (e.g. `node_modules/`, `.env`). The plugin's own git calls pin `core.fsmonitor=false`, so a planted fsmonitor can't run during the check. Any difference prints **GUARDRAIL VIOLATION**, exits with code 3, and discards the review. Nothing is auto-reverted, so edits you make at the same time are never lost.
 7. **Prompt:** Grok is told it is read-only and that repository content is data, not instructions.
 
 The review header states which layers were active for that run.
@@ -64,10 +66,14 @@ The review header states which layers were active for that run.
 - **Windows has no kernel sandbox** (Grok doesn't offer one). Layers 1–4, 6, and 7 still apply, and the header says `Kernel sandbox: NOT enforced`. End-to-end review on a real Windows machine hasn't been verified yet; unit tests run on Windows in CI.
 - **Grok doesn't confirm sandbox enforcement** in headless mode, so on macOS/Linux the header says "requested, unconfirmed". Grok's built-in profiles fall back to running without the sandbox if the kernel refuses it.
 - Repositories inside `/tmp`, `/var/tmp`, or `~/.grok` are writable even under the sandbox. The header says so, and the integrity check still applies.
-- The integrity check can't tell Grok's writes apart from your own edits during the run.
-- Ignored files (e.g. `node_modules/`, `.env`) are checked by path, not by content.
+- The integrity check can't tell Grok's writes apart from your own edits during the run, so don't edit the repo while a background review runs.
+- Ignored files are compared by size and modification time, not content, and only the first 200,000 are checked (the header says when that limit is hit).
 - Grok-native plugins and hooks you installed under `~/.grok` still load, and the isolation check will refuse to run while they're active.
-- The reviewed repo's own instruction files (e.g. `AGENTS.md`) may be loaded by Grok. They're listed in the review header.
+- In a folder you've trusted in Grok, the repo's own instructions, skills, and permission rules (e.g. `AGENTS.md`, `.grok/`, `.claude/settings.json`) are loaded. They can't add write access, but they could bias the review; the header shows a WARNING listing them.
+- A repo with its own MCP servers (e.g. `.mcp.json`) is refused, even in an untrusted folder. That fails closed but blocks such repos.
+- Grok can still read individual files outside the repo by exact path, apart from the denied credential stores.
+- Other linked git worktrees aren't covered by the integrity check, and an untracked nested repository is compared as a directory, not by content.
+- Grok's "leader" process mode is not used by headless reviews on this machine; that it can't be triggered on Windows (where no sandbox is requested) is unverified.
 
 ## Development
 

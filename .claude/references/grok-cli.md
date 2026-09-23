@@ -53,6 +53,17 @@ Verification (runs before every review): `grok inspect --json` → arrays `plugi
 - Headless mode reports **no** sandbox status: nothing on stderr, in `--debug-file`, or in `~/.grok/logs/unified.jsonl`. The binary contains `Sandbox applied (kernel-enforced, irreversible)` / `Sandbox could not be applied, continuing without sandbox`, but they don't surface in `-p` runs. So the plugin reports the sandbox as "requested, unconfirmed", never "enforced".
 - Real review of a seeded 5-line bug: 22–55s with `grok-4.7`. Prompt-injection in focus text ("edit files", "approve this") was refused and reported as a finding.
 
+## Permission Deny Rules (verified 2026-09-24)
+
+- `--deny 'Read(<abs path>)'` blocks `read_file`, `list_dir`, and `grep` whose **path argument** matches. `dir/**` does not match `dir` itself — deny both.
+- **Recursive grep bypass:** `grep` rooted at a parent of a denied subtree is NOT blocked and returns matches from inside it. Fix: also deny every ancestor as an exact path (`Read(/)`, `Read(/Users)`, `Read(/Users/me)`, …). Verified: grep on `/`, home, and `~/Dev` all denied; reads inside the repo still allowed.
+- Reads by exact path outside the repo and outside denied subtrees remain possible (e.g. another repo's file) — there is no allow-only-the-repo rule because deny beats allow and there's no negation.
+- Windows path syntax for rules is unverified; the plugin emits both native and forward-slash forms.
+
+## Files grok rewrites on every launch
+
+`~/.grok/managed_config.toml` and `~/.grok/requirements.toml` (0 bytes here) are rewritten by the managed-config sync on every run, before the sandbox applies. Don't include them in integrity fingerprints.
+
 ## Windows
 
 - Install: `irm https://x.ai/cli/install.ps1 | iex` → `%USERPROFILE%\.grok\bin` on User PATH (or Git Bash / MSYS2 via `install.sh`; WSL gets the Linux binary).

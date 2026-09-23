@@ -32,8 +32,9 @@ test("defaults", () => {
   assert.deepEqual(parseReviewArgs([]), {
     base: null,
     scope: "auto",
-    model: "grok-4.7",
+    model: null,
     effort: null,
+    timeoutMinutes: 9,
     focus: ""
   });
 });
@@ -88,4 +89,10 @@ test("--flag=value form", () => {
 test("validates model and effort", () => {
   assert.throws(() => parseReviewArgs(["--model", "grok;rm$(x)"]), /Invalid model/);
   assert.throws(() => parseReviewArgs(["--effort", "ludicrous"]), /Unsupported effort "ludicrous"/);
+});
+
+test("--timeout-minutes is bounded", () => {
+  assert.equal(parseReviewArgs(["--timeout-minutes", "30"]).timeoutMinutes, 30);
+  assert.throws(() => parseReviewArgs(["--timeout-minutes", "0"]), /1 to 120/);
+  assert.throws(() => parseReviewArgs(["--timeout-minutes", "2.5"]), /1 to 120/);
 });

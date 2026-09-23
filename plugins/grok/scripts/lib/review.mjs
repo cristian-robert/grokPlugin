@@ -131,18 +131,19 @@ export function renderReview(review, meta) {
 
 /**
  * @param {string[]} changedPaths
- * @param {boolean} sandboxRequested
+ * @param {string} sandboxDetail
  */
-export function renderViolation(changedPaths, sandboxRequested) {
+export function renderViolation(changedPaths, sandboxDetail) {
   return [
     "# GUARDRAIL VIOLATION: the repository changed during the Grok review",
     "",
     "The review was supposed to be read-only, but these entries differ from the snapshot taken before Grok started:",
     "",
-    ...changedPaths.map((entry) => `- \`${entry}\``),
+    ...changedPaths.map((entry) => `- ${JSON.stringify(entry)}`),
     "",
-    "Nothing was reverted. If you or another tool edited these files during the review, that explains it; otherwise treat this as Grok writing to your repo and inspect `git status` / `git diff` before continuing.",
-    sandboxRequested ? "" : "The kernel sandbox was not in effect on this platform.",
+    `Kernel sandbox for this run: ${sandboxDetail}.`,
+    "",
+    "Nothing was reverted. If you or another tool edited these files during the review, that explains it; otherwise treat this as Grok writing to your repo and inspect `git status` / `git diff` (and `.git/hooks`, `.git/config` for `@git:` entries) before running anything.",
     "The review output was discarded because it was produced by a run that broke the read-only guarantee."
   ].join("\n");
 }

@@ -1,11 +1,11 @@
 // @ts-check
-// Stand-in for the grok CLI. Behavior is chosen by FAKE_GROK_MODE; the received argv is
-// recorded to FAKE_GROK_ARGV_OUT so tests can assert the guardrail flags were passed.
+// Stand-in for the grok CLI, invoked as `fake-grok.mjs <mode> <argvOut|-> ...grokArgs`.
+// The runner passes only an allowlisted environment, so the mode travels as arguments. The
+// received argv, prompt, and environment are recorded to argvOut so tests can assert on them.
 import fs from "node:fs";
 import path from "node:path";
 
-const args = process.argv.slice(2);
-const mode = process.env.FAKE_GROK_MODE ?? "ok";
+const [mode, argvOut, ...args] = process.argv.slice(2);
 
 if (args[0] === "models") {
   process.stdout.write(
@@ -30,12 +30,9 @@ if (args[0] === "inspect") {
   process.exit(0);
 }
 
-if (process.env.FAKE_GROK_ARGV_OUT) {
+if (argvOut !== "-") {
   const promptFile = args[args.indexOf("--prompt-file") + 1];
-  fs.writeFileSync(
-    process.env.FAKE_GROK_ARGV_OUT,
-    JSON.stringify({ args, prompt: fs.readFileSync(promptFile, "utf8"), env: { GROK_CLAUDE_MCPS_ENABLED: process.env.GROK_CLAUDE_MCPS_ENABLED, HOME: process.env.HOME, GROK_HOME: process.env.GROK_HOME } })
-  );
+  fs.writeFileSync(argvOut, JSON.stringify({ args, prompt: fs.readFileSync(promptFile, "utf8"), env: process.env }));
 }
 
 const review = {
@@ -57,6 +54,10 @@ if (mode === "exit1") {
 }
 if (mode === "garbage") {
   process.stdout.write("not json");
+  process.exit(0);
+}
+if (mode === "max-turns") {
+  process.stdout.write(JSON.stringify({ stopReason: "max_turns", structuredOutput: review }));
   process.exit(0);
 }
 if (mode === "bad-schema") {

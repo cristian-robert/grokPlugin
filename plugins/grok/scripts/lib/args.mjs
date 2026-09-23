@@ -1,18 +1,20 @@
 // @ts-check
 
-export const DEFAULT_MODEL = "grok-4.7";
+export const DEFAULT_TIMEOUT_MINUTES = 9;
+const MAX_TIMEOUT_MINUTES = 120;
 
 const SCOPES = new Set(["auto", "working-tree", "branch"]);
 const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const CLAUDE_SIDE_FLAGS = new Set(["--wait", "--background"]);
-const VALUE_FLAGS = new Set(["--base", "--scope", "--model", "--effort"]);
+const VALUE_FLAGS = new Set(["--base", "--scope", "--model", "--effort", "--timeout-minutes"]);
 
 /**
  * @typedef {object} ReviewArgs
  * @property {string | null} base
  * @property {"auto" | "working-tree" | "branch"} scope
- * @property {string} model
+ * @property {string | null} model null means the account's default model
  * @property {string | null} effort
+ * @property {number} timeoutMinutes
  * @property {string} focus
  */
 
@@ -73,7 +75,7 @@ export function parseReviewArgs(argv) {
   // The command passes $ARGUMENTS as one raw string and may append flags like --model after it.
   const tokens = argv.flatMap((arg) => splitRawArgs(arg));
   /** @type {ReviewArgs} */
-  const result = { base: null, scope: "auto", model: DEFAULT_MODEL, effort: null, focus: "" };
+  const result = { base: null, scope: "auto", model: null, effort: null, timeoutMinutes: DEFAULT_TIMEOUT_MINUTES, focus: "" };
   /** @type {string[]} */
   const focus = [];
 
@@ -94,7 +96,7 @@ export function parseReviewArgs(argv) {
     const eq = token.indexOf("=");
     const name = eq === -1 ? token : token.slice(0, eq);
     if (!VALUE_FLAGS.has(name)) {
-      throw new Error(`Unknown option "${name}". Supported: --base <ref>, --scope auto|working-tree|branch, --model <id>, --effort <level>.`);
+      throw new Error(`Unknown option "${name}". Supported: --base <ref>, --scope auto|working-tree|branch, --model <id>, --effort <level>, --timeout-minutes <n>.`);
     }
     let value;
     if (eq !== -1) {
@@ -111,10 +113,16 @@ export function parseReviewArgs(argv) {
       assertSafeRef(value);
       result.base = value;
     } else if (name === "--scope") {
-      if (value !== "auto" && value !== "working-tree" && value !== "branch") {
+      if (!SCOPES.has(value)) {
         throw new Error(`Unsupported scope "${value}". Use one of: ${[...SCOPES].join(", ")}.`);
       }
-      result.scope = value;
+      result.scope = /** @type {ReviewArgs["scope"]} */ (value);
+    } else if (name === "--timeout-minutes") {
+      const minutes = Number(value);
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_TIMEOUT_MINUTES) {
+        throw new Error(`--timeout-minutes must be a whole number from 1 to ${MAX_TIMEOUT_MINUTES}.`);
+      }
+      result.timeoutMinutes = minutes;
     } else if (name === "--model") {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
         throw new Error(`Invalid model "${value}".`);

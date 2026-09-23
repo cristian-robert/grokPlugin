@@ -67,6 +67,67 @@ test("detects staging, committing and stashing", () => {
   );
 });
 
-test("detects new ignored entries by path", () => {
-  assert.deepEqual(changesAfter(noop, (repo) => write(repo, "ignored/secret.txt", "x")), ["@ignored"]);
+test("detects creating and modifying ignored files", () => {
+  assert.deepEqual(changesAfter(noop, (repo) => write(repo, "ignored/secret.txt", "x")), ["@ignored:ignored/secret.txt"]);
+  assert.deepEqual(
+    changesAfter(
+      (repo) => write(repo, "ignored/lib.js", "ok"),
+      (repo) => write(repo, "ignored/lib.js", "evil payload")
+    ),
+    ["@ignored:ignored/lib.js"]
+  );
+});
+
+test("detects git internals: hooks, config, and branch switches", () => {
+  assert.deepEqual(changesAfter(noop, (repo) => write(repo, ".git/hooks/pre-commit", "#!/bin/sh\nevil\n")), ["@git:hooks/pre-commit"]);
+  assert.deepEqual(changesAfter(noop, (repo) => git(repo, ["config", "core.fsmonitor", "evil"])), ["@git:config"]);
+  assert.deepEqual(changesAfter(noop, (repo) => git(repo, ["switch", "-q", "-c", "other"])).sort(), ["@git:HEAD", "@refs"]);
+  assert.deepEqual(changesAfter(noop, (repo) => write(repo, ".git/info/exclude", "*.py\n")), ["@git:info/exclude"]);
+});
+
+test("a planted core.fsmonitor never executes during fingerprinting", (t) => {
+  const repo = makeRepo();
+  t.after(() => cleanup(repo));
+  const marker = path.join(repo, "pwned");
+  write(repo, "fsmon.js", `require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`);
+  git(repo, ["config", "core.fsmonitor", `node ${path.join(repo, "fsmon.js").replace(/\\/g, "/")}`]);
+  computeFingerprint(repo);
+  assert.equal(fs.existsSync(marker), false);
+});
+
+test("detects edits to skip-worktree and assume-unchanged files", () => {
+  assert.deepEqual(
+    changesAfter(
+      (repo) => git(repo, ["update-index", "--skip-worktree", "a.txt"]),
+      (repo) => write(repo, "a.txt", "hidden edit\n")
+    ),
+    ["@flagged:a.txt"]
+  );
+  assert.deepEqual(
+    changesAfter(
+      (repo) => git(repo, ["update-index", "--assume-unchanged", "b.txt"]),
+      (repo) => write(repo, "b.txt", "hidden edit\n")
+    ),
+    ["@flagged:b.txt"]
+  );
+});
+
+test("detects changes inside a submodule even with ignore = all", (t) => {
+  const inner = makeRepo({ "lib.txt": "lib\n" });
+  const repo = makeRepo();
+  t.after(() => {
+    cleanup(inner);
+    cleanup(repo);
+  });
+  git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "sub"]);
+  git(repo, ["config", "-f", ".gitmodules", "submodule.sub.ignore", "all"]);
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "add sub"]);
+
+  const before = computeFingerprint(repo);
+  write(repo, "sub/lib.txt", "tampered\n");
+  write(repo, ".git/modules/sub/hooks/post-checkout", "evil");
+  const changed = diffFingerprints(before, computeFingerprint(repo));
+  assert.ok(changed.includes("@sub:sub/lib.txt"), changed.join(", "));
+  assert.ok(changed.includes("@git:modules/sub/hooks/post-checkout"), changed.join(", "));
 });

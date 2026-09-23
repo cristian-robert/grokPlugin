@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { auditIsolation, buildGrokEnv, describeSandbox, findGrokBinary, parseModelsOutput, parseReviewOutput, resolveGrokHome } from "../plugins/grok/scripts/lib/grok.mjs";
+import { auditIsolation, buildGrokEnv, buildSecretDenyRules, describeSandbox, findGrokBinary, parseModelsOutput, parseReviewOutput, resolveGrokHome, runProcess } from "../plugins/grok/scripts/lib/grok.mjs";
 
 test("parseModelsOutput: logged in", () => {
   const text = "You are logged in with grok.com.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n  - grok-4.5\n";
@@ -19,7 +19,7 @@ test("parseModelsOutput: logged out and CRLF", () => {
 
 test("buildGrokEnv isolates HOME and Claude/Cursor config, keeps real GROK_HOME", () => {
   const env = buildGrokEnv(
-    { PATH: "/bin", HOME: "/real", GROK_SANDBOX: "off", GROK_CLAUDE_MCPS_ENABLED: "true" },
+    { PATH: "/bin", HOME: "/real", GROK_SANDBOX: "off", GROK_CLAUDE_MCPS_ENABLED: "true", GITHUB_TOKEN: "x", GROK_CONFIG: "{}" },
     { isolatedHome: "/tmp/iso", grokHome: "/real/.grok", platform: "darwin" }
   );
   assert.equal(env.PATH, "/bin");
@@ -28,6 +28,8 @@ test("buildGrokEnv isolates HOME and Claude/Cursor config, keeps real GROK_HOME"
   assert.equal(env.GROK_SANDBOX, undefined);
   assert.equal(env.GROK_CLAUDE_MCPS_ENABLED, "false");
   assert.equal(env.GROK_SUBAGENTS, "0");
+  assert.equal(env.GITHUB_TOKEN, undefined);
+  assert.equal(env.GROK_CONFIG, undefined);
   const win = buildGrokEnv({ USERPROFILE: "C:\\Users\\me" }, { isolatedHome: "C:\\tmp\\iso", grokHome: "C:\\Users\\me\\.grok", platform: "win32" });
   assert.equal(win.USERPROFILE, "C:\\tmp\\iso");
 });
@@ -89,7 +91,52 @@ test("findGrokBinary on Windows ignores .cmd shims", (t) => {
 test("parseReviewOutput requires success and structured output", () => {
   const base = { signal: null, stderr: "", timedOut: false };
   assert.throws(() => parseReviewOutput({ ...base, status: 0, stdout: "", timedOut: true }), /timed out/);
-  assert.throws(() => parseReviewOutput({ ...base, status: 0, stdout: JSON.stringify({ stopReason: "max_turns" }) }), /stop reason: max_turns/);
-  const ok = parseReviewOutput({ ...base, status: 0, stdout: JSON.stringify({ sessionId: "s", num_turns: 2, structuredOutput: { verdict: "approve" } }) });
-  assert.deepEqual(ok, { review: { verdict: "approve" }, sessionId: "s", numTurns: 2 });
+  assert.throws(() => parseReviewOutput({ ...base, status: 0, stdout: JSON.stringify({ stopReason: "max_turns", structuredOutput: { verdict: "approve" } }) }), /stop reason: max_turns/);
+  assert.throws(() => parseReviewOutput({ ...base, status: 0, stdout: JSON.stringify({ stopReason: "end_turn" }) }), /without a structured review/);
+  const ok = parseReviewOutput({ ...base, status: 0, stdout: JSON.stringify({ stopReason: "end_turn", sessionId: "s", structuredOutput: { verdict: "approve" } }) });
+  assert.deepEqual(ok, { review: { verdict: "approve" }, sessionId: "s" });
+});
+
+test("runProcess kills a child that ignores SIGTERM and still settles", async () => {
+  const started = Date.now();
+  const run = await runProcess(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { env: process.env, cwd: process.cwd(), timeoutMs: 200 }
+  );
+  assert.equal(run.timedOut, true);
+  assert.ok(Date.now() - started < 15_000);
+  assert.throws(() => parseReviewOutput(run), /timed out/);
+});
+
+test("buildSecretDenyRules denies credential subtrees and every ancestor, never the repo", () => {
+  const rules = buildSecretDenyRules({ repoRoot: "/Users/me/Dev/app", realHome: "/Users/me", grokHome: "/Users/me/.grok", platform: "darwin" });
+  for (const expected of ["Read(/Users/me/.ssh/**)", "Read(/Users/me/.ssh)", "Read(/Users/me/.grok/**)", "Read(/Users/me)", "Read(/Users/me/Dev)", "Read(/Users)", "Read(/)"]) {
+    assert.ok(rules.includes(expected), expected);
+  }
+  assert.ok(!rules.some((rule) => rule === "Read(/Users/me/Dev/app)" || rule.startsWith("Read(/Users/me/Dev/app/")));
+});
+
+test("buildSecretDenyRules skips subtrees that contain the repo", () => {
+  const rules = buildSecretDenyRules({ repoRoot: "/Users/me/.config/nvim", realHome: "/Users/me", grokHome: "/Users/me/.grok", platform: "darwin" });
+  assert.ok(!rules.includes("Read(/Users/me/.config/**)"));
+  assert.ok(!rules.includes("Read(/Users/me/.config/nvim)"));
+  assert.ok(rules.includes("Read(/Users/me/.config)"), "the parent is still denied as an exact grep root");
+});
+
+test("buildSecretDenyRules on Windows emits native and forward-slash forms", () => {
+  const rules = buildSecretDenyRules({ repoRoot: "C:\\src\\app", realHome: "C:\\Users\\me", grokHome: "C:\\Users\\me\\.grok", platform: "win32" });
+  assert.ok(rules.includes("Read(C:\\Users\\me\\.ssh\\**)"));
+  assert.ok(rules.includes("Read(C:/Users/me/.ssh/**)"));
+  assert.ok(rules.includes("Read(C:\\)"));
+});
+
+test("auditIsolation reports repo skills and permission sources", () => {
+  const audit = auditIsolation({
+    plugins: [], hooks: [], mcpServers: [], lspServers: [], projectInstructions: [],
+    skills: [{ name: "evil", source: { type: "project" } }, { name: "pdf", source: { type: "bundled" } }],
+    permissions: { sources: ["/repo/.claude/settings.json"] }
+  });
+  assert.deepEqual(audit.blocking, []);
+  assert.deepEqual(audit.instructions, ["skill evil", "permission rules from /repo/.claude/settings.json"]);
 });

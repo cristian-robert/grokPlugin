@@ -3,8 +3,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { findExecutable } from "./exec.mjs";
+
 const MAX_BUFFER = 256 * 1024 * 1024;
+/** @type {string | null} */
+let resolvedGit = null;
+
+function gitBinary() {
+  resolvedGit ??= findExecutable("git", process.env, process.platform);
+  if (!resolvedGit) {
+    throw new Error("git is not installed or not on PATH.");
+  }
+  return resolvedGit;
+}
 const MAX_UNTRACKED_FILE_BYTES = 24 * 1024;
+const MAX_INLINED_UNTRACKED_FILES = 200;
 export const DEFAULT_MAX_CONTEXT_BYTES = 300 * 1024;
 // Repo content is untrusted: never let a diff run repo-configured external programs.
 const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv", "--no-color"];
@@ -12,7 +25,7 @@ const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv", "--no-color"];
 /**
  * @typedef {{ status: number, stdout: string, stderr: string }} GitResult
  * @typedef {{ mode: "working-tree" | "branch", label: string, baseRef: string | null }} ReviewTarget
- * @typedef {{ label: string, summary: string, changedFiles: string[], content: string, truncated: boolean }} ReviewContext
+ * @typedef {{ summary: string, changedFiles: string[], content: string, truncated: boolean }} ReviewContext
  */
 
 /**
@@ -22,7 +35,8 @@ const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv", "--no-color"];
  * @returns {GitResult}
  */
 export function runGit(cwd, args) {
-  const result = spawnSync("git", ["--no-optional-locks", ...args], {
+  // core.fsmonitor and gpg.program name programs git would run; a planted value must never execute.
+  const result = spawnSync(gitBinary(), ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", ...args], {
     cwd,
     shell: false,
     windowsHide: true,
@@ -49,7 +63,7 @@ export function gitChecked(cwd, args) {
 }
 
 /** @param {string} output */
-function splitNul(output) {
+export function splitNul(output) {
   return output.split("\0").filter(Boolean);
 }
 
@@ -63,7 +77,7 @@ export function getRepoRoot(cwd) {
 }
 
 /** @param {string} cwd */
-function hasCommits(cwd) {
+export function hasCommits(cwd) {
   return runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).status === 0;
 }
 
@@ -206,12 +220,17 @@ export function collectContext(root, target, options = {}) {
         section("Git Status", gitChecked(root, ["status", "--short", "--untracked-files=all"])),
         section("Staged Diff", stagedDiff),
         section("Unstaged Diff", gitChecked(root, ["diff", ...SAFE_DIFF_FLAGS])),
-        section("Untracked Files", untracked.map((file) => describeUntracked(root, file)).join("\n\n"))
+        section(
+          "Untracked Files",
+          [
+            ...untracked.slice(0, MAX_INLINED_UNTRACKED_FILES).map((file) => describeUntracked(root, file)),
+            ...untracked.slice(MAX_INLINED_UNTRACKED_FILES).map((file) => `### ${file}\n(not inlined; read it with read_file if relevant)`)
+          ].join("\n\n")
+        )
       ],
       maxBytes
     );
     return {
-      label: target.label,
       summary: `${staged.length} staged, ${unstaged.length} unstaged, ${untracked.length} untracked file(s).`,
       changedFiles,
       content,
@@ -236,7 +255,6 @@ export function collectContext(root, target, options = {}) {
     maxBytes
   );
   return {
-    label: target.label,
     summary: `${changedFiles.length} file(s) changed since merge-base ${mergeBase.slice(0, 12)} with ${baseRef}.`,
     changedFiles,
     content,
