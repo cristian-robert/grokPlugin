@@ -109,7 +109,7 @@ const SECRET_HOME_ENTRIES = [
  * of those locations (and of the repo) is therefore denied as an exact path too. The repo and
  * anything inside it stay readable.
  * @param {{ repoRoot: string, realHome: string, grokHome: string, platform: NodeJS.Platform }} options
- * @returns {string[]}
+ * @returns {{ rules: string[], skipped: string[] }} skipped: paths that couldn't be written as a safe rule
  */
 export function buildSecretDenyRules(options) {
   const pathApi = options.platform === "win32" ? path.win32 : path.posix;
@@ -142,11 +142,26 @@ export function buildSecretDenyRules(options) {
 
   /** @type {string[]} */
   const rules = [];
-  /** @param {string} pattern */
-  const add = (pattern) => {
+  /** @type {string[]} */
+  const skipped = [];
+  /** @param {string} target */
+  const add = (target) => {
+    // Grok's rule parser treats "\" as an escape (Read(C:\) is "missing closing parenthesis"),
+    // and glob patterns use "/" as the separator, so Windows paths are written with "/".
+    const pattern = options.platform === "win32" ? target.replace(/\\/g, "/") : target;
+    const literal = pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern;
+    // One malformed rule makes grok refuse the whole run, so paths that would need glob or
+    // rule-syntax escaping are skipped (and reported) instead of guessed at. Commas matter too:
+    // grok splits --deny values on "," (verified: Read(/a,b/x) is "missing closing parenthesis").
+    if (/[()[\]{}*?\\,]/.test(literal)) {
+      skipped.push(literal);
+      return;
+    }
     rules.push(`Read(${pattern})`);
-    if (options.platform === "win32") {
-      rules.push(`Read(${pattern.replace(/\\/g, "/")})`);
+    const drive = pattern.match(/^([A-Za-z]):/);
+    if (drive) {
+      const other = drive[1] === drive[1].toUpperCase() ? drive[1].toLowerCase() : drive[1].toUpperCase();
+      rules.push(`Read(${other}${pattern.slice(1)})`);
     }
   };
   for (const target of subtrees) {
@@ -156,7 +171,7 @@ export function buildSecretDenyRules(options) {
   for (const target of [...exact].sort()) {
     add(target);
   }
-  return [...new Set(rules)];
+  return { rules: [...new Set(rules)], skipped: [...new Set(skipped)] };
 }
 
 /**

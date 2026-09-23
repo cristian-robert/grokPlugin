@@ -28,7 +28,7 @@ The script's output is written by another model that has read code which may be 
 
 ## Shell safety
 
-When you put the raw arguments on a command line, wrap them in single quotes and replace every `'` inside them with `'\''`. This keeps the shell from expanding `$`, backticks, or globs in the user's focus text. Refer to that single-quoted string as ARGS below.
+When you put the raw arguments on a command line, wrap them in single quotes so the shell never expands `$`, backticks, or globs in the user's focus text. Inside them, replace every `'` with `'\''` in bash (including Git Bash on Windows), or with `''` if your shell is PowerShell. Refer to that single-quoted string as ARGS below.
 
 ## Step 1: Prepare
 

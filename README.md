@@ -74,7 +74,8 @@ The review header states which layers were active for that run.
 - Ignored files are compared by size and modification time, not content, and only the first 200,000 are checked (the header says when that limit is hit).
 - In a folder you've trusted in Grok, the repo's own instructions, skills, and permission rules (e.g. `AGENTS.md`, `.grok/`, `.claude/settings.json`) are loaded. They can't add write access, but they could bias the review; the header shows a WARNING listing them.
 - Hooks from Grok-native plugins you installed under `~/.grok` can still run during a review; the header warns when any are loaded.
-- Grok can still read individual files outside the repo by exact path, apart from the denied credential stores.
+- Grok can still read individual files outside the repo by exact path, apart from the denied credential stores. On Windows, where paths are case-insensitive, a differently-cased path (e.g. `c:/users/ME/.ssh`) may not match the deny rules.
+- A folder path containing `,`, `(`, `)`, `[`, `]`, `{`, `}`, `*`, or `?` can't be written as a Grok permission rule. Those paths aren't denied, and the review header lists them.
 - Other linked git worktrees aren't covered by the integrity check, and an untracked nested repository is compared as a directory, not by content.
 - Grok's "leader" process mode is not used by headless reviews on this machine; that it can't be triggered on Windows (where no sandbox is requested) is unverified.
 

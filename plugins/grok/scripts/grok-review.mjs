@@ -155,7 +155,8 @@ export async function runReview(argv, options) {
     const promptFile = path.join(tempDir, "prompt.md");
     fs.writeFileSync(promptFile, prompt);
 
-    const extraDenyRules = buildSecretDenyRules({ repoRoot: root, realHome: options.realHome, grokHome, platform: options.platform });
+    const secretRules = buildSecretDenyRules({ repoRoot: root, realHome: options.realHome, grokHome, platform: options.platform });
+    const extraDenyRules = secretRules.rules;
     const snapshot = () => new Map([...computeFingerprint(root), ...computeGrokHomeFingerprint(grokHome)]);
     const totalMs = options.timeoutMs ?? args.timeoutMinutes * 60_000;
     const deadline = Date.now() + totalMs;
@@ -213,7 +214,8 @@ export async function runReview(argv, options) {
         integrity: (changed.length > 0 ? `${changed.length} change(s), listed at the end of this report` : "none") +
           (before.has(IGNORED_TRUNCATED_KEY) ? " (too many ignored files to compare them all; only the first 200000 were checked)" : ""),
         changedDuringReview: changed,
-        isolation: describeIsolation(isolation),
+        isolation: describeIsolation(isolation) +
+          (secretRules.skipped.length > 0 ? `. Note: these paths contain characters Grok's permission rules can't express, so Grok's reads there aren't blocked: ${secretRules.skipped.join(", ")}` : ""),
         truncated: context.truncated,
         sessionId
       })
