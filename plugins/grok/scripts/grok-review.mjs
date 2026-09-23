@@ -23,12 +23,11 @@ import {
   runProcess,
   sandboxWritableDirs
 } from "./lib/grok.mjs";
-import { fillTemplate, renderReview, renderViolation, validateReview, wrapUntrusted } from "./lib/review.mjs";
+import { fillTemplate, renderChangesDuringReview, renderReview, validateReview, wrapUntrusted } from "./lib/review.mjs";
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const EXIT_OK = 0;
 export const EXIT_ERROR = 1;
-export const EXIT_GUARDRAIL_VIOLATION = 3;
 const FORMAT_RESERVE_MS = 2 * 60_000;
 
 /**
@@ -187,21 +186,18 @@ export async function runReview(argv, options) {
     } catch (error) {
       failure = error;
     }
-    // The integrity check runs before any parsing so a violation can never be masked by an error.
-    // If the repo is too damaged to fingerprint at all, that is itself a violation.
+    // Changes made while Grok ran are reported, not fatal: they are almost always the user's own
+    // edits. The check runs before any parsing so the report is never lost to a Grok error.
     /** @type {string[]} */
     let changed;
     try {
       changed = diffFingerprints(before, snapshot());
     } catch (error) {
-      changed = [`(repository could not be fingerprinted after the run: ${/** @type {Error} */ (error).message})`];
+      changed = [`(the repository could not be re-checked after the review: ${/** @type {Error} */ (error).message})`];
     }
-    if (changed.length > 0) {
-      return { exitCode: EXIT_GUARDRAIL_VIOLATION, output: renderViolation(changed, sandbox.detail) };
-    }
-
     if (failure || !formatRun) {
-      throw failure ?? new Error("Grok did not produce a review.");
+      const reason = failure instanceof Error ? failure.message : "Grok did not produce a review.";
+      throw new Error(changed.length > 0 ? `${reason}\n\n${renderChangesDuringReview(changed)}` : reason);
     }
     const { review, sessionId } = parseReviewOutput(formatRun);
     const problems = validateReview(review);
@@ -214,9 +210,9 @@ export async function runReview(argv, options) {
         model,
         target: `${target.label} (${context.summary})`,
         sandbox: sandbox.detail,
-        integrity: before.has(IGNORED_TRUNCATED_KEY)
-          ? "passed: repository unchanged by the review (the repo has too many ignored files to check them all; only the first 200000 were compared)"
-          : "passed: repository unchanged by the review",
+        integrity: (changed.length > 0 ? `${changed.length} change(s), listed at the end of this report` : "none") +
+          (before.has(IGNORED_TRUNCATED_KEY) ? " (too many ignored files to compare them all; only the first 200000 were checked)" : ""),
+        changedDuringReview: changed,
         isolation: describeIsolation(isolation),
         truncated: context.truncated,
         sessionId

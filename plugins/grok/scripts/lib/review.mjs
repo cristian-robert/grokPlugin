@@ -1,12 +1,15 @@
 // @ts-check
 import crypto from "node:crypto";
 
+// Mirrors fingerprint.mjs IGNORED_TRUNCATED_KEY without importing git plumbing into rendering.
+const IGNORED_TRUNCATED_KEY_NAME = "@ignored:truncated";
+
 const SEVERITIES = ["critical", "high", "medium", "low"];
 
 /**
  * @typedef {{ severity: "critical" | "high" | "medium" | "low", title: string, body: string, file: string, line_start: number, line_end: number, confidence: number, recommendation: string }} Finding
  * @typedef {{ verdict: "approve" | "needs-attention", summary: string, findings: Finding[], next_steps: string[] }} Review
- * @typedef {{ model: string, target: string, sandbox: string, integrity: string, isolation: string, truncated: boolean, sessionId: string | null }} RenderMeta
+ * @typedef {{ model: string, target: string, sandbox: string, integrity: string, isolation: string, truncated: boolean, sessionId: string | null, changedDuringReview: string[] }} RenderMeta
  */
 
 /**
@@ -92,7 +95,7 @@ export function renderReview(review, meta) {
     `- **Model:** ${meta.model}`,
     `- **Target:** ${meta.target}`,
     `- **Kernel sandbox:** ${meta.sandbox}`,
-    `- **Integrity check:** ${meta.integrity}`,
+    `- **Changes during review:** ${meta.integrity}`,
     `- **Isolation:** ${meta.isolation}`
   ];
   if (meta.truncated) {
@@ -126,24 +129,61 @@ export function renderReview(review, meta) {
   if (review.next_steps.length > 0) {
     lines.push("## Next steps", "", ...review.next_steps.map((step) => `- ${step}`), "");
   }
+  if (meta.changedDuringReview.length > 0) {
+    lines.push(renderChangesDuringReview(meta.changedDuringReview));
+  }
   return lines.join("\n");
 }
 
 /**
- * @param {string[]} changedPaths
- * @param {string} sandboxDetail
+ * Turns a fingerprint key into something a person recognizes.
+ * @param {string} key
+ * @returns {string}
  */
-export function renderViolation(changedPaths, sandboxDetail) {
+export function describeChange(key) {
+  if (key === "@HEAD") {
+    return "HEAD (a commit, checkout, or reset happened)";
+  }
+  if (key === "@refs") {
+    return "branches, tags, or stash";
+  }
+  if (key === "@index" || key === "@index-flags") {
+    return "the git staging area (index)";
+  }
+  if (key === IGNORED_TRUNCATED_KEY_NAME) {
+    return "the set of ignored files";
+  }
+  if (key.startsWith("@sub:")) {
+    // "@sub:<submodule path>/<inner key>": inner keys starting with @ mark where the path ends.
+    const rest = key.slice("@sub:".length);
+    const split = rest.indexOf("/@");
+    return split === -1 ? `${rest} (in a submodule)` : `${describeChange(rest.slice(split + 1))} (in submodule ${rest.slice(0, split)})`;
+  }
+  for (const [prefix, render] of /** @type {[string, (rest: string) => string][]} */ ([
+    ["@git:", (rest) => `.git/${rest}`],
+    ["@ignored:", (rest) => `${rest} (ignored file)`],
+    ["@flagged:", (rest) => rest],
+    ["@grok-home:", (rest) => `~/.grok/${rest}`]
+  ])) {
+    if (key.startsWith(prefix)) {
+      return render(key.slice(prefix.length));
+    }
+  }
+  return key;
+}
+
+/**
+ * The files that changed while Grok was reviewing: usually edits by the user or another tool.
+ * @param {string[]} changedKeys
+ */
+export function renderChangesDuringReview(changedKeys) {
+  const descriptions = [...new Set(changedKeys.map(describeChange))];
   return [
-    "# GUARDRAIL VIOLATION: the repository changed during the Grok review",
+    `## Changed while the review was running (${descriptions.length})`,
     "",
-    "The review was supposed to be read-only, but these entries differ from the snapshot taken before Grok started:",
+    "These changed after Grok started reviewing, so the review may describe them as they were before. Grok's tools are read-only, so this is normally your own editing or another tool's.",
     "",
-    ...changedPaths.map((entry) => `- ${JSON.stringify(entry)}`),
-    "",
-    `Kernel sandbox for this run: ${sandboxDetail}.`,
-    "",
-    "Nothing was reverted. If you or another tool edited these files during the review, that explains it; otherwise treat this as Grok writing to your repo and inspect `git status` / `git diff` (and `.git/hooks`, `.git/config` for `@git:` entries) before running anything.",
-    "The review output was discarded because it was produced by a run that broke the read-only guarantee."
+    ...descriptions.map((entry) => `- ${JSON.stringify(entry)}`),
+    ""
   ].join("\n");
 }

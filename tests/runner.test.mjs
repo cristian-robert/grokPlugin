@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EXIT_GUARDRAIL_VIOLATION, EXIT_OK, runPrepare, runReview } from "../plugins/grok/scripts/grok-review.mjs";
+import { EXIT_OK, runPrepare, runReview } from "../plugins/grok/scripts/grok-review.mjs";
 import { cleanup, makeRepo, write } from "./helpers.mjs";
 
 const FAKE_SCRIPT = fileURLToPath(new URL("./fixtures/fake-grok.mjs", import.meta.url));
@@ -46,7 +46,8 @@ test("happy path renders the review and passes every guardrail flag", async (t) 
   assert.match(outcome.output, /NEEDS ATTENTION/);
   assert.match(outcome.output, /\[HIGH\] Unchecked divisor/);
   assert.match(outcome.output, /`a\.py:2`/);
-  assert.match(outcome.output, /Integrity check:\*\* passed/);
+  assert.match(outcome.output, /Changes during review:\*\* none/);
+  assert.doesNotMatch(outcome.output, /Changed while the review was running/);
   assert.match(outcome.output, /sess-123/);
 
   const seen = JSON.parse(fs.readFileSync(argvOut, "utf8"));
@@ -84,16 +85,15 @@ test("happy path renders the review and passes every guardrail flag", async (t) 
   assert.match(seen.prompt, /<<<REPOSITORY_DATA [0-9a-f]{24}>>>/);
 });
 
-test("a write during the run is a guardrail violation, reported before parsing", async (t) => {
+test("files changed during the run are listed, and the review is still returned", async (t) => {
   const repo = dirtyRepo();
   t.after(() => cleanup(repo));
   const outcome = await runReview([], options(repo, "write"));
-  assert.equal(outcome.exitCode, EXIT_GUARDRAIL_VIOLATION);
-  assert.match(outcome.output, /GUARDRAIL VIOLATION/);
-  assert.match(outcome.output, /"pwned\.txt"/);
-  assert.match(outcome.output, /Kernel sandbox for this run: /);
-  assert.doesNotMatch(outcome.output, /Unchecked divisor/);
-  assert.ok(fs.existsSync(path.join(repo, "pwned.txt")), "nothing is auto-reverted");
+  assert.equal(outcome.exitCode, EXIT_OK);
+  assert.match(outcome.output, /Unchecked divisor/, "the review is kept");
+  assert.match(outcome.output, /Changes during review:\*\* 1 change\(s\), listed at the end/);
+  assert.match(outcome.output, /## Changed while the review was running \(1\)[\s\S]*"pwned\.txt"/);
+  assert.ok(fs.existsSync(path.join(repo, "pwned.txt")), "nothing is reverted");
 });
 
 test("fails closed on grok errors, garbage, and schema violations", async (t) => {
