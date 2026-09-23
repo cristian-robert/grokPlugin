@@ -7,6 +7,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { findExecutable } from "./exec.mjs";
 
 export const DEFAULT_EFFORT = "high";
+// grok's first launch can be slow (bundled files are unpacked; on Windows, antivirus scans them).
+const GROK_UTILITY_TIMEOUT_MS = 3 * 60_000;
 export const DEFAULT_TIMEOUT_MS = 9 * 60 * 1000;
 
 const READ_TOOLS = ["read_file", "grep", "list_dir"];
@@ -236,7 +238,7 @@ export function auditIsolation(inspect) {
  * @param {string} cwd
  */
 export function inspectIsolation(grok, env, cwd) {
-  const result = spawnSync(grok.command, [...grok.prefixArgs, "inspect", "--json"], { cwd, env, encoding: "utf8", shell: false, windowsHide: true, timeout: 60_000 });
+  const result = spawnSync(grok.command, [...grok.prefixArgs, "inspect", "--json"], { cwd, env, encoding: "utf8", shell: false, windowsHide: true, timeout: GROK_UTILITY_TIMEOUT_MS });
   if (result.error || result.status !== 0) {
     throw new Error(`grok inspect failed, so isolation cannot be verified: ${result.error?.message ?? (result.stderr || result.stdout).trim()}`);
   }
@@ -358,9 +360,10 @@ export function parseModelsOutput(text) {
  * @returns {ModelList}
  */
 export function listModels(grok, env) {
-  const result = spawnSync(grok.command, [...grok.prefixArgs, "models"], { env, encoding: "utf8", shell: false, windowsHide: true, timeout: 60_000 });
+  const result = spawnSync(grok.command, [...grok.prefixArgs, "models"], { env, encoding: "utf8", shell: false, windowsHide: true, timeout: GROK_UTILITY_TIMEOUT_MS });
   if (result.error) {
-    throw new Error(`Could not run grok: ${result.error.message}`);
+    const code = /** @type {NodeJS.ErrnoException} */ (result.error).code;
+    throw new Error(code === "ETIMEDOUT" ? "grok models did not respond within 3 minutes. Run `grok models` once in a terminal (the first launch can be slow), then retry." : `Could not run grok: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(`grok models failed: ${(result.stderr || result.stdout).trim()}`);

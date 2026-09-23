@@ -21,7 +21,7 @@ const grok = findGrokBinary(process.env, process.platform);
 
 /** @param {string[]} args @param {NodeJS.ProcessEnv} env */
 function spawnGrok(args, env) {
-  return spawnSync(grok, args, { cwd: REPO, env, encoding: "utf8", shell: false, windowsHide: true, timeout: 60_000 });
+  return spawnSync(grok, args, { cwd: REPO, env, encoding: "utf8", shell: false, windowsHide: true, timeout: 180_000 });
 }
 
 /** @param {string[]} args @param {NodeJS.ProcessEnv} env */
