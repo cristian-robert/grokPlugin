@@ -276,7 +276,7 @@ export function sandboxWritableDirs(grokHome) {
   const dirs = [os.tmpdir(), "/tmp", "/var/tmp", grokHome];
   return [...new Set(dirs.flatMap((dir) => {
     try {
-      return [fs.realpathSync(dir)];
+      return [fs.realpathSync.native(dir)];
     } catch {
       return [];
     }

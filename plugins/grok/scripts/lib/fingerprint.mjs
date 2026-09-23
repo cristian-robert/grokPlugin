@@ -12,6 +12,14 @@ export const IGNORED_TRUNCATED_KEY = "@ignored:truncated";
 
 /** @typedef {Map<string, string>} Fingerprint */
 
+/**
+ * Keys use forward slashes on every platform, matching how git reports paths.
+ * @param {string} relative
+ */
+function toKeyPath(relative) {
+  return relative.split(path.sep).join("/");
+}
+
 /** @param {string | Buffer} data */
 function sha256(data) {
   return crypto.createHash("sha256").update(data).digest("hex");
@@ -80,7 +88,7 @@ function addGitInternals(root, entries) {
     ...walk(path.join(commonDir, "modules")).filter((file) => !file.includes(`${path.sep}objects${path.sep}`) && isModuleControlFile(file))
   ];
   for (const file of new Set(files)) {
-    entries.set(`@git:${path.relative(commonDir, file) || file}`, hashPath(file));
+    entries.set(`@git:${toKeyPath(path.relative(commonDir, file) || file)}`, hashPath(file));
   }
 }
 
@@ -176,7 +184,7 @@ export function computeGrokHomeFingerprint(grokHome) {
     const absolute = path.join(grokHome, entry);
     const files = fs.existsSync(absolute) && fs.statSync(absolute).isDirectory() ? walk(absolute) : [absolute];
     for (const file of files) {
-      entries.set(`@grok-home:${path.relative(grokHome, file)}`, hashPath(file));
+      entries.set(`@grok-home:${toKeyPath(path.relative(grokHome, file))}`, hashPath(file));
     }
   }
   return entries;

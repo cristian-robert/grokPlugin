@@ -21,7 +21,8 @@ export function git(cwd, args) {
  * @param {Record<string, string>} [files]
  */
 export function makeRepo(files = { "a.txt": "one\n" }) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "grok-plugin-test-")));
+  // .native expands Windows 8.3 short names (RUNNER~1), matching the paths git reports.
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "grok-plugin-test-")));
   git(dir, ["init", "-q", "-b", "main"]);
   git(dir, ["config", "user.email", "test@example.com"]);
   git(dir, ["config", "user.name", "test"]);
