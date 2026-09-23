@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fillTemplate, renderReview, validateReview, wrapUntrusted } from "../plugins/grok/scripts/lib/review.mjs";
+import { describeChange, fillTemplate, renderReview, validateReview, wrapUntrusted } from "../plugins/grok/scripts/lib/review.mjs";
 
 /** @type {import("../plugins/grok/scripts/lib/review.mjs").Review} */
 const valid = {
@@ -45,6 +45,7 @@ test("renderReview orders findings by severity and shows guardrail status", () =
     sandbox: "NOT enforced: Grok has no sandbox on Windows",
     integrity: "passed",
     isolation: "verified",
+    changedDuringReview: ["src/app.js", "@git:hooks/pre-commit"],
     truncated: true,
     sessionId: null
   });
@@ -52,4 +53,16 @@ test("renderReview orders findings by severity and shows guardrail status", () =
   assert.match(out, /`y\.js:3-9`/);
   assert.match(out, /Kernel sandbox:\*\* NOT enforced/);
   assert.match(out, /too large to inline/);
+  assert.match(out, /## Changed while the review was running \(2\)[\s\S]*"src\/app\.js"[\s\S]*"\.git\/hooks\/pre-commit"/);
+});
+
+test("describeChange makes fingerprint keys readable", () => {
+  assert.equal(describeChange("src/a.ts"), "src/a.ts");
+  assert.equal(describeChange("@git:hooks/pre-commit"), ".git/hooks/pre-commit");
+  assert.equal(describeChange("@ignored:.env"), ".env (ignored file)");
+  assert.equal(describeChange("@flagged:config.json"), "config.json");
+  assert.equal(describeChange("@grok-home:plugins/x/hooks.json"), "~/.grok/plugins/x/hooks.json");
+  assert.equal(describeChange("@index"), "the git staging area (index)");
+  assert.equal(describeChange("@sub:libs/core/@git:config"), ".git/config (in submodule libs/core)");
+  assert.equal(describeChange("@sub:libs/core/src/x.c"), "libs/core/src/x.c (in a submodule)");
 });

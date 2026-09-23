@@ -1,6 +1,6 @@
 {
   "name": "grok",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Unofficial: deep adversarial code review by Grok via the grok CLI and your SuperGrok subscription. Strictly read-only.",
   "author": {
     "name": "cristian-robert"
