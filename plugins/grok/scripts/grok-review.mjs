@@ -215,7 +215,7 @@ export async function runReview(argv, options) {
         target: `${target.label} (${context.summary})`,
         sandbox: sandbox.detail,
         integrity: before.has(IGNORED_TRUNCATED_KEY)
-          ? `passed: repository unchanged by the review (only the first 200000 of ${before.get(IGNORED_TRUNCATED_KEY)} ignored files were checked)`
+          ? "passed: repository unchanged by the review (the repo has too many ignored files to check them all; only the first 200000 were compared)"
           : "passed: repository unchanged by the review",
         isolation: describeIsolation(isolation),
         truncated: context.truncated,

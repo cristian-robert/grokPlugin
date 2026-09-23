@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-import { collectContext, getRepoRoot, resolveTarget } from "../plugins/grok/scripts/lib/git.mjs";
+import { collectContext, getRepoRoot, gitCapped, gitChecked, resolveTarget, splitNulCapped } from "../plugins/grok/scripts/lib/git.mjs";
 import { cleanup, git, makeRepo, write } from "./helpers.mjs";
 
 test("auto scope picks working tree when dirty", (t) => {
@@ -83,4 +83,27 @@ test("getRepoRoot works from a subdirectory and rejects non-repos", (t) => {
   t.after(() => cleanup(repo));
   assert.equal(getRepoRoot(path.join(repo, "sub")), path.resolve(repo));
   assert.throws(() => getRepoRoot(path.parse(repo).root), /inside a Git repository/);
+});
+
+test("gitCapped truncates large output and drops the cut-off record", (t) => {
+  const repo = makeRepo();
+  t.after(() => cleanup(repo));
+  for (let i = 0; i < 50; i += 1) {
+    write(repo, `untracked-${String(i).padStart(3, "0")}.txt`, "x");
+  }
+  const full = splitNulCapped(gitCapped(repo, ["ls-files", "--others", "-z"], 1024 * 1024));
+  assert.equal(full.length, 50);
+  const cut = gitCapped(repo, ["ls-files", "--others", "-z"], 100);
+  assert.equal(cut.truncated, true);
+  const records = splitNulCapped(cut);
+  assert.ok(records.length > 0 && records.length < 50);
+  assert.ok(records.every((name) => /^untracked-\d{3}\.txt$/.test(name)), "no partial names");
+});
+
+test("runGit handles output larger than a pipe buffer", (t) => {
+  const repo = makeRepo();
+  t.after(() => cleanup(repo));
+  write(repo, "a.txt", `${"y".repeat(100)}\n`.repeat(200_000));
+  const diff = gitChecked(repo, ["diff"]);
+  assert.ok(diff.length > 10 * 1024 * 1024);
 });

@@ -3,10 +3,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { gitChecked, hasCommits, splitNul } from "./git.mjs";
+import { gitCapped, gitChecked, hasCommits, splitNul, splitNulCapped } from "./git.mjs";
 
 const MAX_HASHED_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_IGNORED_FILES = 200_000;
+const MAX_IGNORED_LISTING_BYTES = 32 * 1024 * 1024;
 const MAX_SUBMODULE_DEPTH = 4;
 export const IGNORED_TRUNCATED_KEY = "@ignored:truncated";
 
@@ -99,7 +100,9 @@ function addGitInternals(root, entries) {
  * @param {Fingerprint} entries
  */
 function addIgnoredFiles(root, entries) {
-  const ignored = splitNul(gitChecked(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]));
+  // Capped: a repo with huge node_modules or build caches can list millions of ignored files.
+  const listing = gitCapped(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], MAX_IGNORED_LISTING_BYTES);
+  const ignored = splitNulCapped(listing);
   for (const relative of ignored.slice(0, MAX_IGNORED_FILES)) {
     let state = "missing";
     try {
@@ -110,8 +113,8 @@ function addIgnoredFiles(root, entries) {
     }
     entries.set(`@ignored:${relative}`, state);
   }
-  if (ignored.length > MAX_IGNORED_FILES) {
-    entries.set(IGNORED_TRUNCATED_KEY, String(ignored.length));
+  if (listing.truncated || ignored.length > MAX_IGNORED_FILES) {
+    entries.set(IGNORED_TRUNCATED_KEY, listing.truncated ? "listing truncated" : String(ignored.length));
   }
 }
 

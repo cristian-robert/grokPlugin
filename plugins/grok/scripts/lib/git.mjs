@@ -1,11 +1,14 @@
 // @ts-check
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { findExecutable } from "./exec.mjs";
 
-const MAX_BUFFER = 256 * 1024 * 1024;
+const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
+// Lists and diffs that only feed the prompt: anything past this is truncated anyway.
+const MAX_CONTEXT_OUTPUT_BYTES = 8 * 1024 * 1024;
 /** @type {string | null} */
 let resolvedGit = null;
 
@@ -23,43 +26,114 @@ export const DEFAULT_MAX_CONTEXT_BYTES = 300 * 1024;
 const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv", "--no-color"];
 
 /**
- * @typedef {{ status: number, stdout: string, stderr: string }} GitResult
+ * @typedef {{ status: number, stdout: string, stderr: string, truncated: boolean }} GitResult
  * @typedef {{ mode: "working-tree" | "branch", label: string, baseRef: string | null }} ReviewTarget
  * @typedef {{ summary: string, changedFiles: string[], content: string, truncated: boolean }} ReviewContext
  */
 
+/** @type {string | null} */
+let outputDir = null;
+let outputCounter = 0;
+
+/** Scratch directory for git output files, removed when the process exits. */
+function gitOutputDir() {
+  if (!outputDir) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-git-"));
+    process.once("exit", () => fs.rmSync(dir, { recursive: true, force: true }));
+    outputDir = dir;
+  }
+  return outputDir;
+}
+
 /**
  * Runs git without a shell; arguments never pass through shell parsing on any platform.
+ * stdout goes to a temp file rather than a pipe buffer, so a huge listing or diff can't fail
+ * with ENOBUFS; at most `maxBytes` of it is read back.
  * @param {string} cwd
  * @param {string[]} args
+ * @param {{ maxBytes?: number }} [options]
  * @returns {GitResult}
  */
-export function runGit(cwd, args) {
-  // core.fsmonitor and gpg.program name programs git would run; a planted value must never execute.
-  const result = spawnSync(gitBinary(), ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", ...args], {
-    cwd,
-    shell: false,
-    windowsHide: true,
-    maxBuffer: MAX_BUFFER,
-    encoding: "utf8"
-  });
-  if (result.error) {
-    const code = /** @type {NodeJS.ErrnoException} */ (result.error).code;
-    throw new Error(code === "ENOENT" ? "git is not installed or not on PATH." : `git failed: ${result.error.message}`);
+export function runGit(cwd, args, options = {}) {
+  const maxBytes = options.maxBytes ?? MAX_OUTPUT_BYTES;
+  outputCounter += 1;
+  const outFile = path.join(gitOutputDir(), `${outputCounter}.out`);
+  const fd = fs.openSync(outFile, "w");
+  let result;
+  try {
+    // core.fsmonitor and gpg.program name programs git would run; a planted value must never execute.
+    result = spawnSync(gitBinary(), ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false", ...args], {
+      cwd,
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", fd, "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+      encoding: "utf8"
+    });
+  } finally {
+    fs.closeSync(fd);
   }
-  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+  try {
+    if (result.error) {
+      const code = /** @type {NodeJS.ErrnoException} */ (result.error).code;
+      throw new Error(code === "ENOENT" ? "git is not installed or not on PATH." : `git ${args.join(" ")} failed: ${result.error.message}`);
+    }
+    const size = fs.statSync(outFile).size;
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    const readFd = fs.openSync(outFile, "r");
+    try {
+      fs.readSync(readFd, buffer, 0, length, 0);
+    } finally {
+      fs.closeSync(readFd);
+    }
+    return { status: result.status ?? 1, stdout: buffer.toString("utf8"), stderr: result.stderr ?? "", truncated: size > maxBytes };
+  } finally {
+    fs.rmSync(outFile, { force: true });
+  }
 }
 
 /**
  * @param {string} cwd
  * @param {string[]} args
+ * @returns {string} full stdout; throws if it exceeds the output limit
  */
 export function gitChecked(cwd, args) {
   const result = runGit(cwd, args);
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || `exit ${result.status}`}`);
   }
+  if (result.truncated) {
+    throw new Error(`git ${args.join(" ")} produced more than ${MAX_OUTPUT_BYTES / (1024 * 1024)} MB of output. Add large generated or dependency folders to .gitignore and retry.`);
+  }
   return result.stdout;
+}
+
+/**
+ * Like gitChecked, but returns at most `maxBytes` of output instead of failing on large output.
+ * @param {string} cwd
+ * @param {string[]} args
+ * @param {number} maxBytes
+ * @returns {{ stdout: string, truncated: boolean }}
+ */
+export function gitCapped(cwd, args, maxBytes) {
+  const result = runGit(cwd, args, { maxBytes });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || `exit ${result.status}`}`);
+  }
+  return { stdout: result.stdout, truncated: result.truncated };
+}
+
+/**
+ * NUL-separated records from possibly truncated output; a cut-off final record is dropped.
+ * @param {{ stdout: string, truncated: boolean }} output
+ */
+export function splitNulCapped(output) {
+  const records = splitNul(output.stdout);
+  if (output.truncated && !output.stdout.endsWith("\0")) {
+    records.pop();
+  }
+  return records;
 }
 
 /** @param {string} output */
@@ -173,6 +247,16 @@ function describeUntracked(root, relativePath) {
 }
 
 /**
+ * Output for the prompt only: bounded, with a visible marker when cut.
+ * @param {string} root
+ * @param {string[]} args
+ */
+function capped(root, args) {
+  const { stdout, truncated } = gitCapped(root, args, MAX_CONTEXT_OUTPUT_BYTES);
+  return truncated ? `${stdout}\n[git output truncated at ${MAX_CONTEXT_OUTPUT_BYTES / (1024 * 1024)} MB]` : stdout;
+}
+
+/**
  * Keeps the prompt bounded. Grok can still read_file anything that was cut.
  * @param {string[]} sections
  * @param {number} maxBytes
@@ -204,23 +288,24 @@ export function collectContext(root, target, options = {}) {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_CONTEXT_BYTES;
 
   if (target.mode === "working-tree") {
-    const staged = hasCommits(root) ? splitNul(gitChecked(root, ["diff", "--cached", "--name-only", "-z"])) : splitNul(gitChecked(root, ["ls-files", "-z"]));
-    const unstaged = splitNul(gitChecked(root, ["diff", "--name-only", "-z"]));
-    const untracked = splitNul(gitChecked(root, ["ls-files", "--others", "--exclude-standard", "-z"]));
+    const list = (/** @type {string[]} */ gitArgs) => splitNulCapped(gitCapped(root, gitArgs, MAX_CONTEXT_OUTPUT_BYTES));
+    const staged = hasCommits(root) ? list(["diff", "--cached", "--name-only", "-z"]) : list(["ls-files", "-z"]);
+    const unstaged = list(["diff", "--name-only", "-z"]);
+    const untracked = list(["ls-files", "--others", "--exclude-standard", "-z"]);
     const changedFiles = [...new Set([...staged, ...unstaged, ...untracked])].sort();
     if (changedFiles.length === 0) {
       throw new Error("Nothing to review: the working tree is clean. Try --scope branch or --base <ref>.");
     }
     const stagedDiff = hasCommits(root)
-      ? gitChecked(root, ["diff", "--cached", ...SAFE_DIFF_FLAGS])
-      : gitChecked(root, ["diff", "--cached", "--root", ...SAFE_DIFF_FLAGS]);
+      ? capped(root, ["diff", "--cached", ...SAFE_DIFF_FLAGS])
+      : capped(root, ["diff", "--cached", "--root", ...SAFE_DIFF_FLAGS]);
     const { content, truncated } = joinWithinBudget(
       [
         section("Changed Files", changedFiles.join("\n")),
-        section("Diff Stat", hasCommits(root) ? gitChecked(root, ["diff", "--stat", ...SAFE_DIFF_FLAGS, "HEAD"]) : "(no commits yet)"),
-        section("Git Status", gitChecked(root, ["status", "--short", "--untracked-files=all"])),
+        section("Diff Stat", hasCommits(root) ? capped(root, ["diff", "--stat", ...SAFE_DIFF_FLAGS, "HEAD"]) : "(no commits yet)"),
+        section("Git Status", capped(root, ["status", "--short", "--untracked-files=all"])),
         section("Staged Diff", stagedDiff),
-        section("Unstaged Diff", gitChecked(root, ["diff", ...SAFE_DIFF_FLAGS])),
+        section("Unstaged Diff", capped(root, ["diff", ...SAFE_DIFF_FLAGS])),
         section(
           "Untracked Files",
           [
@@ -242,16 +327,16 @@ export function collectContext(root, target, options = {}) {
   const baseRef = /** @type {string} */ (target.baseRef);
   const mergeBase = gitChecked(root, ["merge-base", "HEAD", "--end-of-options", baseRef]).trim();
   const range = `${mergeBase}..HEAD`;
-  const changedFiles = splitNul(gitChecked(root, ["diff", "--name-only", "-z", range]));
+  const changedFiles = splitNulCapped(gitCapped(root, ["diff", "--name-only", "-z", range], MAX_CONTEXT_OUTPUT_BYTES));
   if (changedFiles.length === 0) {
     throw new Error(`Nothing to review: HEAD has no changes against ${baseRef}.`);
   }
   const { content, truncated } = joinWithinBudget(
     [
       section("Changed Files", changedFiles.join("\n")),
-      section("Commit Log", gitChecked(root, ["log", "--oneline", "--no-decorate", range])),
-      section("Diff Stat", gitChecked(root, ["diff", "--stat", ...SAFE_DIFF_FLAGS, range])),
-      section("Branch Diff", gitChecked(root, ["diff", ...SAFE_DIFF_FLAGS, range]))
+      section("Commit Log", capped(root, ["log", "--oneline", "--no-decorate", range])),
+      section("Diff Stat", capped(root, ["diff", "--stat", ...SAFE_DIFF_FLAGS, range])),
+      section("Branch Diff", capped(root, ["diff", ...SAFE_DIFF_FLAGS, range]))
     ],
     maxBytes
   );
