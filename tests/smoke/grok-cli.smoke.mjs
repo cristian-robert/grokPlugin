@@ -11,7 +11,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { buildGrokEnv, buildReviewArgs, buildSecretDenyRules, findGrokBinary, parseModelsOutput, resolveGrokHome } from "../../plugins/grok/scripts/lib/grok.mjs";
+import { buildGrokEnv, buildReviewArgs, buildSecretDenyRules, findGrokBinary, parseModelsOutput, resolveGrokHome, sandboxStartupFailure } from "../../plugins/grok/scripts/lib/grok.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCHEMA = fs.readFileSync(path.join(REPO, "plugins", "grok", "schemas", "review-output.schema.json"), "utf8");
@@ -64,7 +64,13 @@ test("every generated argument parses: investigation step", (t) => {
   const { rules, skipped } = buildSecretDenyRules({ repoRoot: REPO, realHome, grokHome, platform: process.platform });
   console.log(`deny rules: ${rules.length}, skipped: ${skipped.join(" | ") || "none"}`);
   const args = buildReviewArgs({ promptFile, model: "grok-4.7", effort: "high", sandbox: process.platform !== "win32", cwd: REPO, extraDenyRules: rules });
-  const output = run(args, env);
+  let output = run(args, env);
+  const refusal = sandboxStartupFailure({ status: 1, signal: null, stdout: output, stderr: "", timedOut: false });
+  if (refusal) {
+    // Arguments parsed; the sandbox itself can't start here. The plugin reruns without it.
+    console.log(`sandbox refused on this machine (${refusal}); checking arguments without --sandbox`);
+    output = run(buildReviewArgs({ promptFile, model: "grok-4.7", effort: "high", sandbox: false, cwd: REPO, extraDenyRules: rules }), env);
+  }
   assert.match(output, /Not signed in/, `grok rejected the arguments:\n${output}`);
 });
 

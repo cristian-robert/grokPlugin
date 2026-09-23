@@ -20,6 +20,7 @@ import {
   parseInvestigation,
   parseReviewOutput,
   resolveGrokHome,
+  sandboxStartupFailure,
   runProcess,
   sandboxWritableDirs
 } from "./lib/grok.mjs";
@@ -151,7 +152,7 @@ export async function runReview(argv, options) {
       REVIEW_INPUT: wrapped.text
     });
     const schemaJson = JSON.stringify(JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, "schemas", "review-output.schema.json"), "utf8")));
-    const sandbox = describeSandbox(options.platform, os.release(), root, sandboxWritableDirs(grokHome));
+    let sandbox = describeSandbox(options.platform, os.release(), root, sandboxWritableDirs(grokHome));
     const promptFile = path.join(tempDir, "prompt.md");
     fs.writeFileSync(promptFile, prompt);
 
@@ -166,11 +167,23 @@ export async function runReview(argv, options) {
     const before = snapshot();
     // Step 1: investigate with tools and write a free-form review. Step 2: resume the same session
     // to convert it to the schema. --json-schema on step 1 makes Grok skip its tools entirely.
-    const investigationRun = await runProcess(
+    let investigationRun = await runProcess(
       grok.command,
       [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile })],
       { env, cwd: root, timeoutMs: totalMs - formatReserveMs }
     );
+    // Grok's sandbox can refuse to start on some machines. As with Windows (no sandbox at all),
+    // the review then runs on the remaining layers and the header says the sandbox was not in effect.
+    const sandboxFailure = sandbox.requested ? sandboxStartupFailure(investigationRun) : null;
+    if (sandboxFailure) {
+      sandbox = { requested: false, enforced: "no", detail: `NOT enforced: Grok couldn't start its sandbox on this machine (${sandboxFailure})` };
+      common.sandbox = false;
+      investigationRun = await runProcess(
+        grok.command,
+        [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile })],
+        { env, cwd: root, timeoutMs: Math.max(deadline - Date.now() - formatReserveMs, 60_000) }
+      );
+    }
     /** @type {unknown} */
     let failure = null;
     /** @type {import("./lib/grok.mjs").RunResult | null} */

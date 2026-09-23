@@ -30,6 +30,11 @@ if (args[0] === "inspect") {
   process.exit(0);
 }
 
+if (mode === "sandbox-fail" && args.includes("--sandbox")) {
+  process.stderr.write("error: sandbox profile resolve failed: socket deny resolution failed: could not resolve runtime-socket deny path /run/podman/podman.sock: Permission denied (os error 13)\nerror: this sandbox could not enforce its deny list on Linux. Refusing to start with denied paths unprotected.\n");
+  process.exit(1);
+}
+
 const isFormatStep = args.includes("--json-schema");
 if (argvOut !== "-") {
   const promptFile = args[args.indexOf("--prompt-file") + 1];

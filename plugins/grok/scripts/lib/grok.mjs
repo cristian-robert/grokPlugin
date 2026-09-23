@@ -441,6 +441,24 @@ export function runProcess(command, args, options) {
 }
 
 /**
+ * Detects grok refusing to start because its kernel sandbox can't be set up (e.g. on Linux,
+ * grok 1.0.41 refuses when it can't read /run/podman/podman.sock to build its deny list).
+ * @param {RunResult} run
+ * @returns {string | null} grok's reason, or null when the run did not fail that way
+ */
+export function sandboxStartupFailure(run) {
+  if (run.status === 0 || run.timedOut) {
+    return null;
+  }
+  const text = `${run.stderr}\n${run.stdout}`;
+  if (!/sandbox/i.test(text) || !/refusing to start|could not enforce|could not be applied|sandbox profile resolve failed|sandbox initialization failed/i.test(text)) {
+    return null;
+  }
+  const firstLine = text.split(/\r?\n/).map((line) => line.replace(/^error:\s*/i, "").trim()).find(Boolean) ?? "unknown reason";
+  return firstLine.slice(0, 240);
+}
+
+/**
  * @param {RunResult} run
  * @returns {Record<string, unknown>} the parsed JSON envelope of a run that finished normally
  */
