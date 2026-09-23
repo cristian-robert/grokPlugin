@@ -328,6 +328,8 @@ export function buildReviewArgs(options) {
     ...[...DENY_RULES, ...(options.extraDenyRules ?? [])].flatMap((rule) => ["--deny", rule]),
     "--disable-web-search",
     "--no-subagents",
+    // Grok can update itself mid-review (seen on Windows: grok.exe swapped for a new build).
+    "--no-auto-update",
     "--cwd", options.cwd
   );
   return args;

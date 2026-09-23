@@ -167,41 +167,73 @@ export async function runReview(argv, options) {
     const before = snapshot();
     // Step 1: investigate with tools and write a free-form review. Step 2: resume the same session
     // to convert it to the schema. --json-schema on step 1 makes Grok skip its tools entirely.
-    let investigationRun = await runProcess(
-      grok.command,
-      [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile })],
-      { env, cwd: root, timeoutMs: totalMs - formatReserveMs }
-    );
-    // Grok's sandbox can refuse to start on some machines. As with Windows (no sandbox at all),
-    // the review then runs on the remaining layers and the header says the sandbox was not in effect.
-    const sandboxFailure = sandbox.requested ? sandboxStartupFailure(investigationRun) : null;
-    if (sandboxFailure) {
-      sandbox = { requested: false, enforced: "no", detail: `NOT enforced: Grok couldn't start its sandbox on this machine (${sandboxFailure})` };
-      common.sandbox = false;
-      investigationRun = await runProcess(
-        grok.command,
-        [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile })],
-        { env, cwd: root, timeoutMs: Math.max(deadline - Date.now() - formatReserveMs, 60_000) }
-      );
-    }
+    const remaining = () => deadline - Date.now();
+    /**
+     * @param {{ promptFile: string, schemaJson?: string, resumeSessionId?: string }} step
+     * @param {number} timeoutMs
+     */
+    const runStep = (step, timeoutMs) =>
+      runProcess(grok.command, [...grok.prefixArgs, ...buildReviewArgs({ ...common, ...step })], { env, cwd: root, timeoutMs });
+
     /** @type {unknown} */
     let failure = null;
-    /** @type {import("./lib/grok.mjs").RunResult | null} */
-    let formatRun = null;
+    /** @type {import("./lib/review.mjs").Review | null} */
+    let review = null;
+    /** @type {string | null} */
+    let sessionId = null;
     try {
-      const { sessionId } = parseInvestigation(investigationRun);
+      let investigationRun = await runStep({ promptFile }, totalMs - formatReserveMs);
+      // Grok's sandbox can refuse to start on some machines. As with Windows (no sandbox at all),
+      // the review then runs on the remaining layers and the header says the sandbox was not in effect.
+      const sandboxFailure = sandbox.requested ? sandboxStartupFailure(investigationRun) : null;
+      if (sandboxFailure) {
+        sandbox = { requested: false, enforced: "no", detail: `NOT enforced: Grok couldn't start its sandbox on this machine (${sandboxFailure})` };
+        common.sandbox = false;
+        investigationRun = await runStep({ promptFile }, Math.max(remaining() - formatReserveMs, 60_000));
+      }
+      // One retry per step for transient failures (a crash, or grok's binary being replaced
+      // mid-run), but never after a timeout and only while the time budget allows it.
+      let investigation;
+      try {
+        investigation = parseInvestigation(investigationRun);
+      } catch (error) {
+        if (investigationRun.timedOut || remaining() < formatReserveMs + 2 * 60_000) {
+          throw error;
+        }
+        investigationRun = await runStep({ promptFile }, remaining() - formatReserveMs);
+        investigation = parseInvestigation(investigationRun);
+      }
+
       const formatPromptFile = path.join(tempDir, "format.md");
       fs.copyFileSync(path.join(PLUGIN_ROOT, "prompts", "format-review.md"), formatPromptFile);
-      formatRun = await runProcess(
-        grok.command,
-        [...grok.prefixArgs, ...buildReviewArgs({ ...common, promptFile: formatPromptFile, schemaJson, resumeSessionId: sessionId })],
-        { env, cwd: root, timeoutMs: Math.max(deadline - Date.now(), 30_000) }
-      );
+      const formatStep = { promptFile: formatPromptFile, schemaJson, resumeSessionId: investigation.sessionId };
+      const parseFormatted = (/** @type {import("./lib/grok.mjs").RunResult} */ run) => {
+        const parsed = parseReviewOutput(run);
+        const problems = validateReview(parsed.review);
+        if (problems.length > 0) {
+          throw new Error(`Grok's review did not match the expected format: ${problems.join("; ")}`);
+        }
+        return { review: /** @type {import("./lib/review.mjs").Review} */ (parsed.review), sessionId: parsed.sessionId };
+      };
+      let formatRun = await runStep(formatStep, Math.max(remaining(), 30_000));
+      let formatted;
+      try {
+        formatted = parseFormatted(formatRun);
+      } catch (error) {
+        if (formatRun.timedOut || remaining() < 60_000) {
+          throw error;
+        }
+        formatRun = await runStep(formatStep, remaining());
+        formatted = parseFormatted(formatRun);
+      }
+      review = formatted.review;
+      sessionId = formatted.sessionId;
     } catch (error) {
       failure = error;
     }
-    // Changes made while Grok ran are reported, not fatal: they are almost always the user's own
-    // edits. The check runs before any parsing so the report is never lost to a Grok error.
+
+    // Changes made while Grok ran are reported, never fatal: they are almost always the user's own
+    // edits. The check runs even when Grok failed, so the report is never lost.
     /** @type {string[]} */
     let changed;
     try {
@@ -209,18 +241,13 @@ export async function runReview(argv, options) {
     } catch (error) {
       changed = [`(the repository could not be re-checked after the review: ${/** @type {Error} */ (error).message})`];
     }
-    if (failure || !formatRun) {
+    if (failure || !review) {
       const reason = failure instanceof Error ? failure.message : "Grok did not produce a review.";
-      throw new Error(changed.length > 0 ? `${reason}\n\n${renderChangesDuringReview(changed)}` : reason);
-    }
-    const { review, sessionId } = parseReviewOutput(formatRun);
-    const problems = validateReview(review);
-    if (problems.length > 0) {
-      throw new Error(`Grok's review did not match the expected format: ${problems.join("; ")}`);
+      throw new Error(changed.length > 0 ? `${reason}\n\n${renderChangesDuringReview(changed, { afterFailure: true })}` : reason);
     }
     return {
       exitCode: EXIT_OK,
-      output: renderReview(/** @type {import("./lib/review.mjs").Review} */ (review), {
+      output: renderReview(review, {
         model,
         target: `${target.label} (${context.summary})`,
         sandbox: sandbox.detail,
@@ -249,7 +276,7 @@ async function main(argv) {
     try {
       outcome = await runReview(rest, options);
     } catch (error) {
-      outcome = { exitCode: EXIT_ERROR, output: `Grok review failed: ${/** @type {Error} */ (error).message}` };
+      outcome = { exitCode: EXIT_ERROR, output: `# Grok review failed\n\n**Reason:** ${/** @type {Error} */ (error).message}` };
     }
   } else {
     outcome = { exitCode: EXIT_ERROR, output: "Usage: grok-review.mjs prepare|review [--base <ref>] [--scope auto|working-tree|branch] [--model <id>] [--effort <level>] [--timeout-minutes <n>] [focus ...]" };

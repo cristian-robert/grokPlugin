@@ -66,6 +66,7 @@ test("happy path renders the review and passes every guardrail flag", async (t) 
   assert.match(args, /--disallowed-tools [^ ]*use_tool/);
   assert.match(args, /--deny MCPTool\(\*\)/);
   assert.match(args, /--no-subagents/);
+  assert.match(args, /--no-auto-update/);
   assert.match(args, /--reasoning-effort high/);
   assert.doesNotMatch(args, /--max-turns/);
   assert.equal(seen.args.includes("--sandbox"), process.platform !== "win32");
@@ -183,4 +184,31 @@ test("when grok refuses to start its sandbox, the review reruns without it and s
   const format = JSON.parse(fs.readFileSync(`${argvOut}.format`, "utf8"));
   assert.ok(!investigation.args.includes("--sandbox") && !format.args.includes("--sandbox"), "both steps run without the failed sandbox");
   assert.ok(format.args.includes("--tools"), "every other guardrail flag stays");
+});
+
+for (const mode of ["flaky-investigation", "flaky-format"]) {
+  test(`a transient failure is retried once (${mode})`, async (t) => {
+    const repo = dirtyRepo();
+    const argvOut = path.join(os.tmpdir(), `fake-grok-${mode}-${process.pid}.json`);
+    t.after(() => {
+      cleanup(repo);
+      for (const suffix of ["", ".format", ".investigation.count", ".format.count"]) {
+        fs.rmSync(`${argvOut}${suffix}`, { force: true });
+      }
+    });
+    const outcome = await runReview([], options(repo, mode, argvOut));
+    assert.equal(outcome.exitCode, EXIT_OK);
+    assert.match(outcome.output, /Unchecked divisor/);
+  });
+}
+
+test("a failure message leads with the reason and labels in-flight changes as not the cause", async (t) => {
+  const repo = dirtyRepo();
+  t.after(() => cleanup(repo));
+  await assert.rejects(runReview([], options(repo, "write-then-fail")), (error) => {
+    const message = /** @type {Error} */ (error).message;
+    assert.match(message, /^Grok exited with 1: boom/, "the real reason comes first");
+    assert.match(message, /For information only, NOT the cause of the failure above[\s\S]*"edited-meanwhile\.txt"/);
+    return true;
+  });
 });

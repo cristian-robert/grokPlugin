@@ -171,9 +171,10 @@ export function computeFingerprint(root, depth = 0) {
 // Places under ~/.grok where a write would persist into later, possibly unsandboxed, grok
 // sessions: auto-trusted plugins, skills, agents, hooks, config, and the grok binary itself.
 // managed_config.toml and requirements.toml are left out: grok's managed-config sync rewrites
-// them on every launch, and they can only tighten policy.
+// them on every launch, and they can only tighten policy. bin/ is left out: grok updates its own
+// binaries there (grok.exe, grok.exe.old, agent.exe), which is not a change to the user's work.
 const GROK_HOME_PERSISTENCE = [
-  "plugins", "skills", "agents", "hooks", "hooks-paths", "bin", "config.toml", "sandbox.toml", "trusted_folders.toml"
+  "plugins", "skills", "agents", "hooks", "hooks-paths", "config.toml", "sandbox.toml", "trusted_folders.toml"
 ];
 
 /**

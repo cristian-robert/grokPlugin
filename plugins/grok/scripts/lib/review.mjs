@@ -175,13 +175,18 @@ export function describeChange(key) {
 /**
  * The files that changed while Grok was reviewing: usually edits by the user or another tool.
  * @param {string[]} changedKeys
+ * @param {{ afterFailure?: boolean }} [options] afterFailure: the review failed for another reason
  */
-export function renderChangesDuringReview(changedKeys) {
+export function renderChangesDuringReview(changedKeys, options = {}) {
   const descriptions = [...new Set(changedKeys.map(describeChange))];
   return [
-    `## Changed while the review was running (${descriptions.length})`,
+    options.afterFailure
+      ? `## For information only, NOT the cause of the failure above: files changed while Grok was running (${descriptions.length})`
+      : `## Changed while the review was running (${descriptions.length})`,
     "",
-    "These changed after Grok started reviewing, so the review may describe them as they were before. Grok's tools are read-only, so this is normally your own editing or another tool's.",
+    options.afterFailure
+      ? "These are listed so you know about them. They did not make the review fail."
+      : "These changed after Grok started reviewing, so the review may describe them as they were before. Grok's tools are read-only, so this is normally your own editing or another tool's.",
     "",
     ...descriptions.map((entry) => `- ${JSON.stringify(entry)}`),
     ""
