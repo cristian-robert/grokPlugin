@@ -217,6 +217,7 @@ export function collectContext(root, target, options = {}) {
     const { content, truncated } = joinWithinBudget(
       [
         section("Changed Files", changedFiles.join("\n")),
+        section("Diff Stat", hasCommits(root) ? gitChecked(root, ["diff", "--stat", ...SAFE_DIFF_FLAGS, "HEAD"]) : "(no commits yet)"),
         section("Git Status", gitChecked(root, ["status", "--short", "--untracked-files=all"])),
         section("Staged Diff", stagedDiff),
         section("Unstaged Diff", gitChecked(root, ["diff", ...SAFE_DIFF_FLAGS])),

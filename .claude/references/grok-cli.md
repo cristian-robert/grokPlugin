@@ -53,6 +53,10 @@ Verification (runs before every review): `grok inspect --json` → arrays `plugi
 - Headless mode reports **no** sandbox status: nothing on stderr, in `--debug-file`, or in `~/.grok/logs/unified.jsonl`. The binary contains `Sandbox applied (kernel-enforced, irreversible)` / `Sandbox could not be applied, continuing without sandbox`, but they don't surface in `-p` runs. So the plugin reports the sandbox as "requested, unconfirmed", never "enforced".
 - Real review of a seeded 5-line bug: 22–55s with `grok-4.7`. Prompt-injection in focus text ("edit files", "approve this") was refused and reported as a finding.
 
+## `--json-schema` kills tool use (verified 2026-09-24)
+
+With `--json-schema`, Grok answered a review prompt in one turn with **zero tool calls** (even with read tools offered and the diff's caller untouched in the repo). The same prompt without it: 3–9 tool calls, traced the caller, 8 findings vs 3. Fix used by the plugin: investigate with `--output-format json` (envelope has `sessionId`, `text`, `stopReason`), then `--resume <sessionId> --json-schema <schema>` with a "convert your review" prompt. Resume accepts the same `--sandbox read-only` (a *different* profile is refused). Timing with `--reasoning-effort high`: ~3.5–5.5 min for a one-file change.
+
 ## Permission Deny Rules (verified 2026-09-24)
 
 - `--deny 'Read(<abs path>)'` blocks `read_file`, `list_dir`, and `grep` whose **path argument** matches. `dir/**` does not match `dir` itself — deny both.

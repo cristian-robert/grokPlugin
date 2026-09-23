@@ -38,6 +38,7 @@ test("happy path renders the review and passes every guardrail flag", async (t) 
   t.after(() => {
     cleanup(repo);
     fs.rmSync(argvOut, { force: true });
+    fs.rmSync(`${argvOut}.format`, { force: true });
   });
 
   const outcome = await runReview(["focus on", "zero division"], options(repo, "ok", argvOut));
@@ -50,11 +51,22 @@ test("happy path renders the review and passes every guardrail flag", async (t) 
 
   const seen = JSON.parse(fs.readFileSync(argvOut, "utf8"));
   const args = seen.args.join(" ");
+  assert.doesNotMatch(args, /--json-schema/, "the investigation step must not be schema-constrained");
+  assert.match(args, /--output-format json/);
+  const format = JSON.parse(fs.readFileSync(`${argvOut}.format`, "utf8"));
+  const formatArgs = format.args.join(" ");
+  assert.match(formatArgs, /--resume sess-123/);
+  assert.match(formatArgs, /--json-schema /);
+  assert.match(formatArgs, /--tools read_file,grep,list_dir/, "the format step keeps every guardrail flag");
+  assert.match(formatArgs, /--deny MCPTool\(\*\)/);
+  assert.match(format.prompt, /Convert the review you just wrote into JSON/);
   assert.match(args, /--permission-mode dontAsk/);
   assert.match(args, /--tools read_file,grep,list_dir/);
   assert.match(args, /--disallowed-tools [^ ]*use_tool/);
   assert.match(args, /--deny MCPTool\(\*\)/);
   assert.match(args, /--no-subagents/);
+  assert.match(args, /--reasoning-effort high/);
+  assert.doesNotMatch(args, /--max-turns/);
   assert.equal(seen.args.includes("--sandbox"), process.platform !== "win32");
   assert.equal(seen.env.GROK_CLAUDE_MCPS_ENABLED, "false");
   assert.equal(seen.env.AWS_SECRET_ACCESS_KEY, undefined, "credentials never reach grok");
@@ -63,8 +75,11 @@ test("happy path renders the review and passes every guardrail flag", async (t) 
   assert.match(seen.env.HOME, /grok-review-.*home$/);
   assert.notEqual(seen.env.HOME, os.homedir());
   assert.ok(!fs.existsSync(path.dirname(seen.env.HOME)), "isolated home is removed after the run");
-  assert.match(outcome.output, /Isolation:\*\* verified no plugins.*WARNING.*AGENTS\.md/);
+  assert.match(outcome.output, /Isolation:\*\* WARNING: this repo supplied instructions.*AGENTS\.md/);
   assert.match(seen.prompt, /User focus: focus on zero division/);
+  assert.match(seen.prompt, /Phase 3: Trace beyond the diff/);
+  assert.match(seen.prompt, /Do not use MCP servers, plugins/);
+  assert.match(seen.prompt, /## Diff Stat[\s\S]*a\.py/);
   assert.match(seen.prompt, /\+    return a \/ b/);
   assert.match(seen.prompt, /<<<REPOSITORY_DATA [0-9a-f]{24}>>>/);
 });
@@ -97,10 +112,12 @@ test("refuses unknown models and logged-out accounts", async (t) => {
   await assert.rejects(runReview([], options(repo, "logged-out")), /grok login/);
 });
 
-test("refuses to run when plugins or hooks would still load", async (t) => {
+test("loaded plugins and hooks are reported in the header, not blocking", async (t) => {
   const repo = dirtyRepo();
   t.after(() => cleanup(repo));
-  await assert.rejects(runReview([], options(repo, "leaky")), /Refusing to run[\s\S]*plugin: codex[\s\S]*hook:/);
+  const outcome = await runReview([], options(repo, "leaky"));
+  assert.equal(outcome.exitCode, EXIT_OK);
+  assert.match(outcome.output, /Isolation:\*\* WARNING: Grok loaded plugin: codex, hook: .*hooks\.json/);
 });
 
 test("prepare returns models and review size without touching git write paths", async (t) => {
@@ -115,7 +132,7 @@ test("prepare returns models and review size without touching git write paths", 
     target: "working tree diff",
     summary: "0 staged, 1 unstaged, 0 untracked file(s).",
     fileCount: 1,
-    recommendedMode: "wait"
+    recommendedMode: "background"
   });
   const out = await runPrepare([], options(repo, "logged-out"));
   assert.equal(out.exitCode, 1);
@@ -131,6 +148,7 @@ test("uses the account's default model when --model is absent", async (t) => {
   t.after(() => {
     cleanup(repo);
     fs.rmSync(argvOut, { force: true });
+    fs.rmSync(`${argvOut}.format`, { force: true });
   });
   const outcome = await runReview([], options(repo, "ok", argvOut));
   assert.match(outcome.output, /Model:\*\* grok-4\.7/);
