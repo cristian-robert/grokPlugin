@@ -30,9 +30,10 @@ if (args[0] === "inspect") {
   process.exit(0);
 }
 
+const isFormatStep = args.includes("--json-schema");
 if (argvOut !== "-") {
   const promptFile = args[args.indexOf("--prompt-file") + 1];
-  fs.writeFileSync(argvOut, JSON.stringify({ args, prompt: fs.readFileSync(promptFile, "utf8"), env: process.env }));
+  fs.writeFileSync(isFormatStep ? `${argvOut}.format` : argvOut, JSON.stringify({ args, prompt: fs.readFileSync(promptFile, "utf8"), env: process.env }));
 }
 
 const review = {
@@ -44,24 +45,29 @@ const review = {
   next_steps: ["Add a zero check."]
 };
 
-if (mode === "write") {
-  const cwd = args[args.indexOf("--cwd") + 1];
-  fs.writeFileSync(path.join(cwd, "pwned.txt"), "grok wrote this");
-}
-if (mode === "exit1") {
-  process.stderr.write("boom");
-  process.exit(1);
-}
-if (mode === "garbage") {
-  process.stdout.write("not json");
+if (!isFormatStep) {
+  if (mode === "write") {
+    const cwd = args[args.indexOf("--cwd") + 1];
+    fs.writeFileSync(path.join(cwd, "pwned.txt"), "grok wrote this");
+  }
+  if (mode === "exit1") {
+    process.stderr.write("boom");
+    process.exit(1);
+  }
+  if (mode === "garbage") {
+    process.stdout.write("not json");
+    process.exit(0);
+  }
+  if (mode === "max-turns") {
+    process.stdout.write(JSON.stringify({ stopReason: "max_turns", sessionId: "sess-123", text: "partial" }));
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify({ stopReason: "end_turn", sessionId: "sess-123", text: "VERDICT: needs-attention\n..." }));
   process.exit(0);
 }
-if (mode === "max-turns") {
-  process.stdout.write(JSON.stringify({ stopReason: "max_turns", structuredOutput: review }));
-  process.exit(0);
-}
+
 if (mode === "bad-schema") {
   process.stdout.write(JSON.stringify({ stopReason: "end_turn", structuredOutput: { verdict: "lgtm" } }));
   process.exit(0);
 }
-process.stdout.write(JSON.stringify({ stopReason: "end_turn", sessionId: "sess-123", num_turns: 3, structuredOutput: review }));
+process.stdout.write(JSON.stringify({ stopReason: "end_turn", sessionId: "sess-123", num_turns: 1, structuredOutput: review }));

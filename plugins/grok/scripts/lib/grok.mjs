@@ -6,7 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 import { findExecutable } from "./exec.mjs";
 
-export const DEFAULT_MAX_TURNS = 40;
+export const DEFAULT_EFFORT = "high";
 export const DEFAULT_TIMEOUT_MS = 9 * 60 * 1000;
 
 const READ_TOOLS = ["read_file", "grep", "list_dir"];
@@ -168,7 +168,8 @@ export function resolveGrokHome(baseEnv, realHome) {
 }
 
 /**
- * Decides from `grok inspect --json` whether anything that could add capabilities is still loaded.
+ * Lists, from `grok inspect --json`, anything still loaded that could add capabilities (reported
+ * in the review header; the tool allowlist keeps Grok from calling MCP or plugin tools).
  * Repository-supplied instructions, skills, and permission rules (a trusted folder's AGENTS.md,
  * .grok/ or .claude/ config) are allowed but reported: blocking them would block every such repo,
  * and the CLI flags and deny rules still win over them.
@@ -284,11 +285,19 @@ export function sandboxWritableDirs(grokHome) {
 }
 
 /**
- * @param {{ promptFile: string, model: string, effort: string | null, schemaJson: string, sandbox: boolean, cwd: string, extraDenyRules?: string[], maxTurns?: number }} options
+ * No --max-turns: a review that hits a turn cap is discarded (see parseReviewOutput), so depth is
+ * bounded by the wall-clock timeout instead.
+ * @param {{ promptFile: string, model: string, effort: string | null, schemaJson?: string | null, resumeSessionId?: string | null, sandbox: boolean, cwd: string, extraDenyRules?: string[] }} options
  * @returns {string[]}
  */
 export function buildReviewArgs(options) {
-  const args = ["--prompt-file", options.promptFile, "-m", options.model, "--json-schema", options.schemaJson];
+  const args = ["--prompt-file", options.promptFile, "-m", options.model];
+  if (options.resumeSessionId) {
+    args.push("--resume", options.resumeSessionId);
+  }
+  // --json-schema makes Grok answer immediately without using its tools, so only the final
+  // formatting step is constrained; the investigation step runs free with JSON envelope output.
+  args.push(...(options.schemaJson ? ["--json-schema", options.schemaJson] : ["--output-format", "json"]));
   if (options.effort) {
     args.push("--reasoning-effort", options.effort);
   }
@@ -302,7 +311,6 @@ export function buildReviewArgs(options) {
     ...[...DENY_RULES, ...(options.extraDenyRules ?? [])].flatMap((rule) => ["--deny", rule]),
     "--disable-web-search",
     "--no-subagents",
-    "--max-turns", String(options.maxTurns ?? DEFAULT_MAX_TURNS),
     "--cwd", options.cwd
   );
   return args;
@@ -419,9 +427,9 @@ export function runProcess(command, args, options) {
 
 /**
  * @param {RunResult} run
- * @returns {{ review: unknown, sessionId: string | null }}
+ * @returns {Record<string, unknown>} the parsed JSON envelope of a run that finished normally
  */
-export function parseReviewOutput(run) {
+function parseEnvelope(run) {
   if (run.timedOut) {
     throw new Error("Grok timed out before finishing the review. Retry with --background (which allows 30 minutes) or a smaller --scope.");
   }
@@ -439,8 +447,31 @@ export function parseReviewOutput(run) {
   if (reason !== "end_turn") {
     throw new Error(`Grok stopped before finishing the review (stop reason: ${reason}).`);
   }
+  return parsed;
+}
+
+/**
+ * The investigation step: a free-form review plus the session to resume for formatting.
+ * @param {RunResult} run
+ * @returns {{ sessionId: string, text: string }}
+ */
+export function parseInvestigation(run) {
+  const parsed = parseEnvelope(run);
+  if (typeof parsed.sessionId !== "string" || !parsed.sessionId) {
+    throw new Error("Grok finished the investigation without a session id to resume.");
+  }
+  return { sessionId: parsed.sessionId, text: typeof parsed.text === "string" ? parsed.text : "" };
+}
+
+/**
+ * The formatting step: the structured review.
+ * @param {RunResult} run
+ * @returns {{ review: unknown, sessionId: string | null }}
+ */
+export function parseReviewOutput(run) {
+  const parsed = parseEnvelope(run);
   if (typeof parsed.structuredOutput !== "object" || parsed.structuredOutput === null) {
-    throw new Error(`Grok finished without a structured review (stop reason: ${reason}).`);
+    throw new Error(`Grok finished without a structured review (stop reason: ${String(parsed.stopReason)}).`);
   }
   return {
     review: parsed.structuredOutput,
