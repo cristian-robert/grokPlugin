@@ -1,0 +1,14 @@
+{
+  "name": "grok-review",
+  "owner": {
+    "name": "cristian-robertiosef"
+  },
+  "plugins": [
+    {
+      "name": "grok",
+      "source": "./plugins/grok",
+      "description": "Unofficial: deep adversarial code review by Grok 4.7, strictly read-only."
+    }
+  ],
+  "description": "Unofficial Claude Code plugins that bring Grok in as a strictly read-only adversarial reviewer."
+}

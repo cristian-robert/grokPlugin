@@ -1,0 +1,12 @@
+grokPlugin
+Copyright 2026 cristian-robertiosef
+
+This product includes material adapted from the Codex plugin for Claude Code
+(https://github.com/openai/codex-plugin-cc), Copyright 2026 OpenAI, licensed
+under the Apache License, Version 2.0:
+
+- plugins/grok/prompts/adversarial-review.md (adapted from prompts/adversarial-review.md;
+  modified: read-only role, untrusted-input rule, tool-driven review method)
+- plugins/grok/schemas/review-output.schema.json (copied unmodified)
+
+A copy of the Apache License 2.0 is available at http://www.apache.org/licenses/LICENSE-2.0
