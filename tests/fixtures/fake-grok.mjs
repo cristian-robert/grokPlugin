@@ -89,7 +89,7 @@ if (!isFormatStep) {
     process.stdout.write(JSON.stringify({ stopReason: "max_turns", sessionId: "sess-123", text: "partial" }));
     process.exit(0);
   }
-  process.stdout.write(JSON.stringify({ stopReason: "end_turn", sessionId: "sess-123", text: "VERDICT: needs-attention\n..." }));
+  process.stdout.write(JSON.stringify({ stopReason: mode === "camel-case" ? "endTurn" : "end_turn", sessionId: "sess-123", text: "VERDICT: needs-attention\n..." }));
   process.exit(0);
 }
 
@@ -97,4 +97,5 @@ if (mode === "bad-schema") {
   process.stdout.write(JSON.stringify({ stopReason: "end_turn", structuredOutput: { verdict: "lgtm" } }));
   process.exit(0);
 }
-process.stdout.write(JSON.stringify({ stopReason: "end_turn", sessionId: "sess-123", num_turns: 1, structuredOutput: review }));
+// Newer grok (1.0.41) spells it "endTurn"; the plugin must accept both.
+process.stdout.write(JSON.stringify({ stopReason: mode === "camel-case" ? "endTurn" : "end_turn", sessionId: "sess-123", num_turns: 1, structuredOutput: review }));

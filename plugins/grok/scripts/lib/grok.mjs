@@ -464,6 +464,15 @@ export function sandboxStartupFailure(run) {
 }
 
 /**
+ * grok's spelling of the stop reason varies by version (1.0.40 on macOS: "end_turn"; 1.0.41 on
+ * Windows: "endTurn"), so compare case- and separator-insensitively.
+ * @param {string} reason
+ */
+export function isNormalFinish(reason) {
+  return reason.toLowerCase().replace(/[^a-z]/g, "") === "endturn";
+}
+
+/**
  * @param {RunResult} run
  * @returns {Record<string, unknown>} the parsed JSON envelope of a run that finished normally
  */
@@ -482,7 +491,7 @@ function parseEnvelope(run) {
     throw new Error(`Grok returned non-JSON output: ${run.stdout.trim().slice(0, 500)}`);
   }
   const reason = typeof parsed.stopReason === "string" ? parsed.stopReason : "unknown";
-  if (reason !== "end_turn") {
+  if (!isNormalFinish(reason)) {
     throw new Error(`Grok stopped before finishing the review (stop reason: ${reason}).`);
   }
   return parsed;
