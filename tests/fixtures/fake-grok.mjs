@@ -36,6 +36,28 @@ if (mode === "sandbox-fail" && args.includes("--sandbox")) {
 }
 
 const isFormatStep = args.includes("--json-schema");
+
+// Flaky modes fail only on the first call of a step; the call count lives next to argvOut.
+/** @param {string} step */
+function firstCall(step) {
+  const counter = `${argvOut}.${step}.count`;
+  const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+  fs.writeFileSync(counter, String(count + 1));
+  return count === 0;
+}
+if (mode === "write-then-fail" && !isFormatStep) {
+  fs.writeFileSync(path.join(args[args.indexOf("--cwd") + 1], "edited-meanwhile.txt"), "user edit");
+  process.stderr.write("boom");
+  process.exit(1);
+}
+if (mode === "flaky-investigation" && !isFormatStep && firstCall("investigation")) {
+  process.stderr.write("grok crashed: the executable was replaced");
+  process.exit(1);
+}
+if (mode === "flaky-format" && isFormatStep && firstCall("format")) {
+  process.stdout.write(JSON.stringify({ stopReason: "end_turn", structuredOutput: { verdict: "lgtm" } }));
+  process.exit(0);
+}
 if (argvOut !== "-") {
   const promptFile = args[args.indexOf("--prompt-file") + 1];
   fs.writeFileSync(isFormatStep ? `${argvOut}.format` : argvOut, JSON.stringify({ args, prompt: fs.readFileSync(promptFile, "utf8"), env: process.env }));
