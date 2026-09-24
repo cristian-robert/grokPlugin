@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { auditIsolation, buildGrokEnv, buildSecretDenyRules, describeSandbox, findGrokBinary, parseModelsOutput, parseReviewOutput, resolveGrokHome, runProcess } from "../plugins/grok/scripts/lib/grok.mjs";
+import { auditIsolation, buildGrokEnv, buildSecretDenyRules, isNormalFinish, describeSandbox, findGrokBinary, parseModelsOutput, parseReviewOutput, resolveGrokHome, runProcess } from "../plugins/grok/scripts/lib/grok.mjs";
 
 test("parseModelsOutput: logged in", () => {
   const text = "You are logged in with grok.com.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n  - grok-4.5\n";
@@ -152,4 +152,19 @@ test("auditIsolation reports repo skills and permission sources", () => {
   });
   assert.deepEqual(audit.blocking, []);
   assert.deepEqual(audit.instructions, ["skill evil", "permission rules from /repo/.claude/settings.json"]);
+});
+
+test("isNormalFinish accepts every spelling of end_turn and nothing else", () => {
+  for (const reason of ["end_turn", "endTurn", "EndTurn", "end-turn", "END_TURN"]) {
+    assert.equal(isNormalFinish(reason), true, reason);
+  }
+  for (const reason of ["max_turns", "maxTurns", "cancelled", "unknown", "", "end_turn_early"]) {
+    assert.equal(isNormalFinish(reason), false, reason);
+  }
+});
+
+test("parseReviewOutput accepts grok 1.0.41's camelCase stop reason", () => {
+  const run = { status: 0, signal: null, stderr: "", timedOut: false, stdout: JSON.stringify({ stopReason: "endTurn", sessionId: "s", structuredOutput: { verdict: "approve" } }) };
+  assert.deepEqual(parseReviewOutput(run), { review: { verdict: "approve" }, sessionId: "s" });
+  assert.throws(() => parseReviewOutput({ ...run, stdout: JSON.stringify({ stopReason: "maxTurns", structuredOutput: {} }) }), /maxTurns/);
 });

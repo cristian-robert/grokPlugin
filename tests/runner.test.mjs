@@ -212,3 +212,11 @@ test("a failure message leads with the reason and labels in-flight changes as no
     return true;
   });
 });
+
+test("a review from grok 1.0.41 (stopReason \"endTurn\") succeeds end to end", async (t) => {
+  const repo = dirtyRepo();
+  t.after(() => cleanup(repo));
+  const outcome = await runReview([], options(repo, "camel-case"));
+  assert.equal(outcome.exitCode, EXIT_OK);
+  assert.match(outcome.output, /Unchecked divisor/);
+});
